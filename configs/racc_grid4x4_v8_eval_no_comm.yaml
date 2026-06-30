@@ -1,0 +1,5 @@
+_base_: "racc_grid4x4_v8_eval.yaml"
+experiment_name: "racc_grid4x4_v8_eval_no_comm"
+
+dynamic_graph:
+  gate_threshold: 1.1

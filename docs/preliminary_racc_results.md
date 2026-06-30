@@ -147,3 +147,42 @@ The next candidate should use uncertainty-calibrated imputation:
 3. expose reconstruction confidence to the policy;
 4. penalize control sensitivity to low-confidence reconstructions;
 5. repeat the same-weight full/no-message test before comparison with MAPPO.
+
+## v8: uncertainty-calibrated imputation
+
+v8 predicts a per-feature confidence together with each reconstructed value.
+Both the imputed local state and the residual message feature are scaled by
+confidence. Zero messages still produce zero confidence and the exact fallback.
+
+### Grid3x3 admission test
+
+Three training seeds and five paired evaluation seeds:
+
+| Method | Travel | Waiting | Queue | Reconstruction error | Confidence | Comm. |
+|---|---:|---:|---:|---:|---:|---:|
+| v8 full | 95.08 | 21.68 | 0.1127 | 0.1722 | 0.483 | 51.2% |
+| v8 same weights, no messages | 95.81 | 22.32 | 0.1186 | 0.1812 | 0 | 0% |
+
+Travel time, waiting time, and reconstruction error improved in all three
+training seeds, so v8 passed the small-scale test.
+
+### Grid4x4 multi-seed result
+
+| Method | Travel | Waiting | Queue | Throughput | Recon. error | Confidence | Comm. |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Robust MAPPO | 96.38 | 11.38 | 0.0245 | 225.53 | — | — | 0% |
+| v8 full | 93.74 | 9.83 | 0.0209 | 226.47 | 0.0519 | 0.857 | 94.5% |
+| v8 same weights, no messages | 93.24 | 9.26 | 0.0197 | 226.53 | 0.0541 | 0 | 0% |
+
+Only one of three training seeds benefited from communication. On average,
+full communication was worse than the same-weight fallback on every control
+metric. Confidence also saturated at 0.857 and produced almost dense
+communication.
+
+## v8 decision
+
+Reconstruction confidence is not control confidence. A prediction can have
+small state error yet move the signal policy in a harmful direction. The next
+gate target must be decision-aware: compare the imputed policy against a clean
+observation teacher and open communication only when it reduces policy
+divergence or improves a control-value estimate.

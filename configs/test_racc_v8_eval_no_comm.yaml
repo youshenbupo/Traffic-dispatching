@@ -1,0 +1,5 @@
+_base_: "test_racc_v8_eval.yaml"
+experiment_name: "test_racc_v8_eval_no_comm"
+
+dynamic_graph:
+  gate_threshold: 1.1

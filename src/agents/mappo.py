@@ -41,6 +41,7 @@ class MAPPOAgent:
         self.comm_cost_coef = graph_cfg.get("comm_cost_coef", 0.01)
         self.reliability_coef = graph_cfg.get("reliability_coef", 0.1)
         self.reconstruction_coef = graph_cfg.get("reconstruction_coef", 0.0)
+        self.confidence_coef = graph_cfg.get("confidence_coef", 0.0)
         self.counterfactual_coef = graph_cfg.get("counterfactual_coef", 0.1)
         self.counterfactual_samples = graph_cfg.get("counterfactual_samples", 2)
         self.counterfactual_temperature = graph_cfg.get("counterfactual_temperature", 1.0)
@@ -136,8 +137,15 @@ class MAPPOAgent:
                     gate = torch.sigmoid(self.comm_gate(obs_tensor))
                     comm_feats = gate * comm_feats
                 if self.comm_type == "racc":
-                    reconstructed = self.comm.reconstruct(
+                    reconstructed, confidence = self.comm.reconstruct_with_confidence(
                         comm_feats, obs_tensor, obs_mask_tensor
+                    )
+                    confidence_scale = confidence.mean(dim=-1, keepdim=True)
+                    policy_comm = comm_feats * confidence_scale
+                    missing = 1.0 - obs_mask_tensor
+                    missing_count = missing.sum().clamp(min=1.0)
+                    self.last_comm_stats["reconstruction_confidence"] = float(
+                        ((confidence * missing).sum() / missing_count).item()
                     )
                     if clean_obs is not None:
                         clean_tensor = torch.FloatTensor(
@@ -153,10 +161,10 @@ class MAPPOAgent:
                             ).item()
                         )
                     global_state = torch.cat(
-                        [reconstructed, comm_feats], dim=-1
+                        [reconstructed, policy_comm], dim=-1
                     ).reshape(1, -1)
                     actor_input = torch.cat(
-                        [reconstructed, comm_feats], dim=-1
+                        [reconstructed, policy_comm], dim=-1
                     )
                 else:
                     global_state = comm_feats.reshape(1, -1)
@@ -273,14 +281,17 @@ class MAPPOAgent:
                     gate = torch.sigmoid(self.comm_gate(obs))
                     comm_out = gate * comm_out
                 if self.comm_type == "racc":
-                    reconstructed = self.comm.reconstruct(
+                    reconstructed, confidence = self.comm.reconstruct_with_confidence(
                         comm_out, obs, obs_masks
                     )
+                    policy_comm = comm_out * confidence.mean(
+                        dim=-1, keepdim=True
+                    )
                     global_state = torch.cat(
-                        [reconstructed, comm_out], dim=-1
+                        [reconstructed, policy_comm], dim=-1
                     ).reshape(T, -1)
                     actor_input = torch.cat(
-                        [reconstructed, comm_out], dim=-1
+                        [reconstructed, policy_comm], dim=-1
                     )
                 else:
                     global_state = comm_out.reshape(T, -1)
@@ -311,6 +322,7 @@ class MAPPOAgent:
             comm_cost = torch.zeros((), device=self.device)
             reliability_loss = torch.zeros((), device=self.device)
             reconstruction_loss = torch.zeros((), device=self.device)
+            confidence_loss = torch.zeros((), device=self.device)
             counterfactual_loss = torch.zeros((), device=self.device)
             if self.comm is not None and self.comm_type == "racc" and comm_details is not None:
                 candidates = comm_details["candidate_mask"].sum().clamp(min=1.0)
@@ -318,6 +330,9 @@ class MAPPOAgent:
                 reliability_loss = self.comm.reliability_loss(obs)
                 reconstruction_loss = self.comm.reconstruction_loss(
                     reconstructed, clean_obs, obs_masks
+                )
+                confidence_loss = self.comm.confidence_loss(
+                    comm_out, clean_obs, obs_masks
                 )
 
                 # Remove sampled senders and use the centralized critic's value
@@ -332,11 +347,16 @@ class MAPPOAgent:
                     cf_comm, _ = self.comm(
                         obs, cf_adj, return_details=True, hard=hard_comm
                     )
-                    cf_reconstructed = self.comm.reconstruct(
+                    cf_reconstructed, cf_confidence = (
+                        self.comm.reconstruct_with_confidence(
                         cf_comm, obs, obs_masks
+                        )
+                    )
+                    cf_policy_comm = cf_comm * cf_confidence.mean(
+                        dim=-1, keepdim=True
                     )
                     cf_state = torch.cat(
-                        [cf_reconstructed, cf_comm], dim=-1
+                        [cf_reconstructed, cf_policy_comm], dim=-1
                     ).reshape(T, -1)
                     cf_value = self.critic(cf_state).squeeze(-1)
                     target = torch.sigmoid(
@@ -370,6 +390,7 @@ class MAPPOAgent:
                     ) * comm_cost
                     + self.reliability_coef * reliability_loss
                     + self.reconstruction_coef * reconstruction_loss
+                    + self.confidence_coef * confidence_loss
                     + self.counterfactual_coef * counterfactual_loss
                 )
 
@@ -382,6 +403,7 @@ class MAPPOAgent:
                 "comm_rate": float(comm_cost.detach().item()),
                 "reliability_loss": float(reliability_loss.detach().item()),
                 "reconstruction_loss": float(reconstruction_loss.detach().item()),
+                "confidence_loss": float(confidence_loss.detach().item()),
                 "counterfactual_loss": float(counterfactual_loss.detach().item()),
             })
 

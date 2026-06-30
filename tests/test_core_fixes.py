@@ -98,8 +98,16 @@ class TestMAPPOUpdate(unittest.TestCase):
         observed = torch.tensor([[[1.0, 0.0, 3.0]]])
         mask = torch.tensor([[[1.0, 0.0, 1.0]]])
         messages = torch.zeros(1, 1, 4)
-        reconstructed = layer.reconstruct(messages, observed, mask)
+        reconstructed, confidence = layer.reconstruct_with_confidence(
+            messages, observed, mask
+        )
         self.assertTrue(torch.allclose(reconstructed, observed))
+        self.assertTrue(torch.allclose(confidence, torch.zeros_like(confidence)))
+        _, active_confidence = layer.reconstruct_with_confidence(
+            torch.ones(1, 1, 4), observed, mask
+        )
+        self.assertTrue(torch.all(active_confidence >= 0))
+        self.assertTrue(torch.all(active_confidence <= 1))
 
     def test_residual_actor_starts_as_local_policy(self):
         import torch
@@ -170,6 +178,7 @@ class TestMAPPOUpdate(unittest.TestCase):
         result = agent.update()
         self.assertTrue(math.isfinite(result["mean_mappo_loss"]))
         self.assertIn("counterfactual_loss", result)
+        self.assertIn("confidence_loss", result)
         self.assertEqual(agent.update_count, 1)
         self.assertGreaterEqual(agent.last_comm_stats["communication_rate"], 0.0)
 

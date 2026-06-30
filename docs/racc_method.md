@@ -89,3 +89,8 @@ observation.
 This prototype improves reconstruction error but does not yet improve control
 over the same-weight no-message ablation on grid4x4. Reconstruction uncertainty
 must be calibrated before this mechanism is presented as the final method.
+
+An uncertainty-calibrated v8 was also tested. It passed grid3x3 but became
+overconfident and nearly dense on grid4x4. This establishes that calibration
+against state reconstruction error alone is insufficient; the confidence
+target must measure decision impact.

@@ -1,0 +1,8 @@
+_base_: "test_racc_v7_reconstruction.yaml"
+experiment_name: "test_racc_v8_uncertainty"
+
+dynamic_graph:
+  reconstruction_coef: 1.0
+  confidence_coef: 0.5
+  counterfactual_coef: 0.0
+  counterfactual_samples: 0

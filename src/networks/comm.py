@@ -72,7 +72,10 @@ class ReliabilityAwareCommLayer(nn.Module):
         self.message = nn.Linear(out_dim, out_dim)
         # Bias-free so zero accepted messages cannot hallucinate a state.
         self.reconstruction_head = nn.Linear(out_dim, in_dim, bias=False)
+        self.confidence_head = nn.Linear(out_dim, in_dim)
         nn.init.zeros_(self.reconstruction_head.weight)
+        nn.init.zeros_(self.confidence_head.weight)
+        nn.init.zeros_(self.confidence_head.bias)
         self.reliability_head = nn.Sequential(
             nn.Linear(in_dim, out_dim),
             nn.ReLU(),
@@ -142,10 +145,28 @@ class ReliabilityAwareCommLayer(nn.Module):
         observed: torch.Tensor,
         observation_mask: torch.Tensor,
     ) -> torch.Tensor:
-        """Fill only missing features using accepted neighbor messages."""
+        reconstructed, _ = self.reconstruct_with_confidence(
+            messages, observed, observation_mask
+        )
+        return reconstructed
+
+    def reconstruct_with_confidence(
+        self,
+        messages: torch.Tensor,
+        observed: torch.Tensor,
+        observation_mask: torch.Tensor,
+    ):
+        """Confidence-weighted imputation with an exact zero-message fallback."""
         predicted = self.reconstruction_head(messages)
+        message_present = (
+            messages.abs().sum(dim=-1, keepdim=True) > 1e-8
+        ).to(observed.dtype)
+        confidence = torch.sigmoid(self.confidence_head(messages))
+        confidence = confidence * message_present
         mask = observation_mask.to(observed.dtype)
-        return observed * mask + predicted * (1.0 - mask)
+        imputed = confidence * predicted + (1.0 - confidence) * observed
+        reconstructed = observed * mask + imputed * (1.0 - mask)
+        return reconstructed, confidence
 
     def reconstruction_loss(
         self,
@@ -163,6 +184,32 @@ class ReliabilityAwareCommLayer(nn.Module):
         ).clamp(min=1.0)
         per_feature = F.smooth_l1_loss(
             reconstructed / scale, clean_target / scale, reduction="none"
+        )
+        return (per_feature * missing).sum() / count
+
+    def confidence_loss(
+        self,
+        messages: torch.Tensor,
+        clean_target: torch.Tensor,
+        observation_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Calibrate confidence against normalized reconstruction accuracy."""
+        missing = 1.0 - observation_mask.to(clean_target.dtype)
+        count = missing.sum()
+        if count.item() == 0:
+            return messages.sum() * 0.0
+        predicted = self.reconstruction_head(messages)
+        scale = clean_target.detach().abs().mean(
+            dim=tuple(range(clean_target.dim() - 1)),
+            keepdim=True,
+        ).clamp(min=1.0)
+        normalized_error = (
+            (predicted.detach() - clean_target).abs() / scale
+        )
+        target_confidence = torch.exp(-normalized_error).clamp(0.0, 1.0)
+        confidence = torch.sigmoid(self.confidence_head(messages))
+        per_feature = F.binary_cross_entropy(
+            confidence, target_confidence, reduction="none"
         )
         return (per_feature * missing).sum() / count
 
