@@ -1,0 +1,5 @@
+_base_: "test_racc_v6_eval_agent_dropout.yaml"
+experiment_name: "test_racc_v6_eval_agent_dropout_no_comm"
+
+dynamic_graph:
+  gate_threshold: 1.1

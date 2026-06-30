@@ -1,0 +1,8 @@
+_base_: "test_mappo_10ep.yaml"
+experiment_name: "test_mappo_10ep_eval_dropout"
+
+robustness:
+  enabled: true
+  perturbations:
+    - type: "observation_dropout"
+      prob: 0.3

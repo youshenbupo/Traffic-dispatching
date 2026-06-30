@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, List
 
-from src.networks.base import MLPActor, MLPCritic
+from src.networks.base import MLPActor, MLPCritic, ResidualCommActor
 from src.networks.gat import GATCommLayer
 from src.networks.comm import MeanPoolCommLayer, ReliabilityAwareCommLayer
 
@@ -64,8 +64,8 @@ class MAPPOAgent:
                 self.comm = GATCommLayer(obs_dim, self.hidden_dim, heads=self.gat_heads).to(self.device)
             # Actor receives comm-enhanced features only when targeting 'both'
             if self.comm_type == "racc":
-                self.actor = MLPActor(
-                    obs_dim + self.hidden_dim, action_dim, self.hidden_dim
+                self.actor = ResidualCommActor(
+                    obs_dim, self.hidden_dim, action_dim, self.hidden_dim
                 ).to(self.device)
                 self.critic = MLPCritic(
                     (obs_dim + self.hidden_dim) * self.n_agents, self.hidden_dim
@@ -371,8 +371,8 @@ class MAPPOAgent:
                             device=self.device,
                         ),
                     ], dim=-1)
-                logits = self.actor.net(obs_batch)
-                loss = F.cross_entropy(logits, act_batch)
+                dist = self.actor(obs_batch)
+                loss = -dist.log_prob(act_batch).mean()
 
                 self.optimizer.zero_grad()
                 loss.backward()

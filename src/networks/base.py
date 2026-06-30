@@ -35,6 +35,43 @@ class MLPActor(nn.Module):
         return torch.distributions.Categorical(logits=logits)
 
 
+class ResidualCommActor(nn.Module):
+    """Local actor plus a zero-initialized communication correction."""
+
+    def __init__(
+        self,
+        obs_dim: int,
+        comm_dim: int,
+        action_dim: int,
+        hidden_dim: int = 128,
+    ):
+        super().__init__()
+        self.obs_dim = obs_dim
+        self.local_net = MLP(obs_dim, hidden_dim, action_dim, num_layers=2)
+        self.comm_net = MLP(
+            obs_dim + comm_dim, hidden_dim, action_dim, num_layers=2
+        )
+        final_layer = self.comm_net.net[-1]
+        nn.init.zeros_(final_layer.weight)
+        nn.init.zeros_(final_layer.bias)
+
+    def forward(
+        self, actor_input: torch.Tensor, mask: torch.Tensor = None
+    ) -> torch.distributions.Categorical:
+        local_obs = actor_input[..., :self.obs_dim]
+        comm_features = actor_input[..., self.obs_dim:]
+        # Enforce an exact fallback: when every message is rejected, the
+        # communication branch contributes exactly zero, including its biases.
+        message_present = (
+            comm_features.abs().sum(dim=-1, keepdim=True) > 1e-8
+        ).to(actor_input.dtype)
+        correction = self.comm_net(actor_input) * message_present
+        logits = self.local_net(local_obs) + correction
+        if mask is not None:
+            logits = logits.masked_fill(~mask.bool(), float("-inf"))
+        return torch.distributions.Categorical(logits=logits)
+
+
 class MLPCritic(nn.Module):
     """State-value critic."""
 

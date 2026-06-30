@@ -1,0 +1,12 @@
+_base_: "mappo_grid4x4_pilot.yaml"
+experiment_name: "test_grid4x4_mappo"
+
+env:
+  num_seconds: 300
+
+training:
+  num_episodes: 1
+  batch_size: 32
+  eval_interval: 1
+  num_eval_episodes: 1
+  save_interval: 1

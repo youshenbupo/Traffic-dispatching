@@ -1,0 +1,7 @@
+_base_: "test_racc_tuned.yaml"
+experiment_name: "test_racc_v2"
+
+dynamic_graph:
+  gate_threshold: 0.35
+  counterfactual_temperature: 0.1
+  counterfactual_margin: 0.05

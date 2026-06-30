@@ -63,7 +63,9 @@ class SUMOMultiAgentEnv:
         self.perturbations = config.get("robustness", {}).get("perturbations", [])
         self.sensor_noise_std = 0.0
         self.obs_dropout_prob = 0.0
+        self.agent_obs_dropout_prob = 0.0
         self.demand_scale = 1.0
+        self.last_observation_quality: Dict[str, float] = {}
         self._parse_perturbations()
         self.demand_spike_seed_offset = 0
 
@@ -73,6 +75,8 @@ class SUMOMultiAgentEnv:
                 self.sensor_noise_std = p.get("std", 0.0)
             elif p["type"] == "observation_dropout":
                 self.obs_dropout_prob = p.get("prob", 0.0)
+            elif p["type"] == "agent_observation_dropout":
+                self.agent_obs_dropout_prob = p.get("prob", 0.0)
             elif p["type"] == "demand_spike":
                 self.demand_scale = p.get("scale", 1.0)
 
@@ -316,6 +320,7 @@ class SUMOMultiAgentEnv:
 
     def _get_observations(self) -> Dict[str, np.ndarray]:
         obs = {}
+        self.last_observation_quality = {}
         for tl_id in self.tls_ids:
             lanes = self.incoming_lanes[tl_id]
             queues = []
@@ -347,12 +352,20 @@ class SUMOMultiAgentEnv:
             ])
 
             # Apply observation dropout on lane-based features only
+            quality = 1.0
             if self.obs_dropout_prob > 0:
                 n_lane_features = len(queues) + len(waits) + len(flows)
                 mask = np.random.rand(n_lane_features) > self.obs_dropout_prob
                 feat[:n_lane_features] *= mask.astype(np.float32)
+                quality *= float(mask.mean())
+            if self.agent_obs_dropout_prob > 0:
+                if np.random.rand() < self.agent_obs_dropout_prob:
+                    n_lane_features = len(queues) + len(waits) + len(flows)
+                    feat[:n_lane_features] = 0.0
+                    quality = 0.0
 
             obs[tl_id] = feat
+            self.last_observation_quality[tl_id] = quality
         return obs
 
     def _compute_rewards(self) -> Dict[str, float]:

@@ -1,0 +1,8 @@
+_base_: "test_racc_v3.yaml"
+experiment_name: "test_racc_v3_eval_agent_dropout"
+
+robustness:
+  enabled: true
+  perturbations:
+    - type: "agent_observation_dropout"
+      prob: 0.3

@@ -18,6 +18,7 @@ class MetricsTracker:
         self.rewards = []
         self.communication_rates = []
         self.mean_reliabilities = []
+        self.observation_qualities = []
 
     def record_step(self, info: Dict[str, Any]):
         self.step_data.append(info)
@@ -33,6 +34,8 @@ class MetricsTracker:
             self.communication_rates.append(info["communication_rate"])
         if "mean_reliability" in info:
             self.mean_reliabilities.append(info["mean_reliability"])
+        if "observation_quality" in info:
+            self.observation_qualities.append(info["observation_quality"])
 
     def finalize(self, arrived_vehicles: List[Dict[str, Any]]):
         """Finalize episode metrics using arrived vehicle data."""
@@ -54,6 +57,8 @@ class MetricsTracker:
             result["communication_rate"] = float(np.mean(self.communication_rates))
         if self.mean_reliabilities:
             result["mean_reliability"] = float(np.mean(self.mean_reliabilities))
+        if self.observation_qualities:
+            result["observation_quality"] = float(np.mean(self.observation_qualities))
         return result
 
     @staticmethod
@@ -74,6 +79,9 @@ class MetricsTracker:
             # Count completed trips, not lane occupancy. The environment
             # accumulates arrivals across all internal SUMO steps.
             "throughput": float(env.last_step_arrived_count),
+            "observation_quality": float(np.mean(
+                list(env.last_observation_quality.values())
+            )) if env.last_observation_quality else 1.0,
         }
 
     @staticmethod

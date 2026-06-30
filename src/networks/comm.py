@@ -144,6 +144,13 @@ class ReliabilityAwareCommLayer(nn.Module):
         feature_mask = (
             torch.rand_like(clean_obs) < corruption_prob
         ).to(clean_obs.dtype)
+        full_dropout = (
+            torch.rand(
+                *clean_obs.shape[:-1], 1,
+                device=clean_obs.device,
+            ) < 0.25
+        ).to(clean_obs.dtype)
+        feature_mask = torch.maximum(feature_mask, full_dropout)
         scale = clean_obs.detach().std(dim=-1, keepdim=True).clamp(min=1.0)
         corrupted = clean_obs * (1.0 - feature_mask)
         corrupted += feature_mask * torch.randn_like(clean_obs) * scale * noise_std

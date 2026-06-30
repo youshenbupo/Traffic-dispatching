@@ -1,0 +1,8 @@
+_base_: "racc_grid4x4_robust_pilot.yaml"
+experiment_name: "racc_grid4x4_robust_eval"
+
+robustness:
+  enabled: true
+  perturbations:
+    - type: "agent_observation_dropout"
+      prob: 0.3

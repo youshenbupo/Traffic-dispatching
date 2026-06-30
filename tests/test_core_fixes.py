@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.agents.mappo import MAPPOAgent
 from src.envs.sumo_env import SUMOMultiAgentEnv
+from src.networks.base import ResidualCommActor
 from src.utils.metrics import MetricsTracker
 from src.utils.config import load_config
 
@@ -89,6 +90,21 @@ class TestConfig(unittest.TestCase):
 
 
 class TestMAPPOUpdate(unittest.TestCase):
+    def test_residual_actor_starts_as_local_policy(self):
+        import torch
+
+        actor = ResidualCommActor(3, 4, 2, hidden_dim=8)
+        local = torch.tensor([[1.0, 2.0, 3.0]])
+        first = actor(torch.cat([local, torch.zeros(1, 4)], dim=-1)).probs
+        second = actor(torch.cat([local, torch.ones(1, 4)], dim=-1)).probs
+        self.assertTrue(torch.allclose(first, second))
+        with torch.no_grad():
+            actor.comm_net.net[-1].weight.fill_(1.0)
+            actor.comm_net.net[-1].bias.fill_(1.0)
+        fallback = actor(torch.cat([local, torch.zeros(1, 4)], dim=-1)).probs
+        local_only = torch.softmax(actor.local_net(local), dim=-1)
+        self.assertTrue(torch.allclose(fallback, local_only))
+
     def test_multi_agent_ratio_update_is_finite(self):
         config = {
             "agent": {"hidden_dim": 16},
