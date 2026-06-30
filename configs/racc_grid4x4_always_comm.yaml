@@ -1,0 +1,9 @@
+_base_: "racc_grid4x4.yaml"
+experiment_name: "racc_grid4x4_always_comm"
+
+dynamic_graph:
+  gate_threshold: 0.0
+  comm_cost_coef: 0.0
+  reliability_coef: 0.0
+  counterfactual_coef: 0.0
+  counterfactual_samples: 0

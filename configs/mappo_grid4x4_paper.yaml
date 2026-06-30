@@ -1,0 +1,11 @@
+_base_: "mappo_grid4x4.yaml"
+experiment_name: "mappo_grid4x4_paper"
+
+env:
+  demand_jitter: 30
+
+training:
+  num_episodes: 100
+  eval_interval: 10
+  num_eval_episodes: 5
+  save_interval: 25

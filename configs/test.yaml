@@ -1,0 +1,50 @@
+experiment_name: "test"
+seed: 42
+log_dir: "./logs"
+result_dir: "./results"
+
+env:
+  name: "sumo"
+  scenario_dir: "data/scenarios/grid3x3"
+  net_file: "grid.net.xml"
+  route_file: "grid.rou.xml"
+  config_file: "grid.sumocfg"
+  use_gui: false
+  num_seconds: 300
+  delta_time: 5
+  yellow_time: 3
+  min_green: 7
+  max_green: 60
+  reward_type: "delay_queue"
+  observation_type: "queue_wait_phase_flow"
+
+network:
+  rows: 3
+  cols: 3
+  edge_length: 200
+  num_lanes: 1
+  speed_limit: 13.89
+
+agent:
+  name: "mappo"
+  hidden_dim: 32
+  lr: 3.0e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_param: 0.2
+  entropy_coef: 0.01
+  value_loss_coef: 0.5
+  max_grad_norm: 0.5
+
+training:
+  num_episodes: 2
+  batch_size: 32
+  update_interval: 20
+  eval_interval: 1
+  num_eval_episodes: 1
+  save_interval: 1
+  use_gpu: true
+  gpus: "2,3"
+
+dynamic_graph:
+  enabled: false

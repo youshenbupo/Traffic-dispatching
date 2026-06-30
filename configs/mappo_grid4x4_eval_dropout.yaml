@@ -1,0 +1,8 @@
+_base_: "mappo_grid4x4_paper.yaml"
+experiment_name: "mappo_grid4x4_eval_dropout"
+
+robustness:
+  enabled: true
+  perturbations:
+    - type: "observation_dropout"
+      prob: 0.3

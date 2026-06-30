@@ -1,0 +1,80 @@
+experiment_name: "gatmappo_grid4x4_flow"
+seed: 42
+log_dir: "./logs"
+result_dir: "./results"
+
+env:
+  name: "sumo"
+  scenario_dir: "data/scenarios/grid4x4"
+  net_file: "grid.net.xml"
+  route_file: "grid.rou.xml"
+  config_file: "grid.sumocfg"
+  use_gui: false
+  num_seconds: 1800
+  delta_time: 5
+  yellow_time: 3
+  min_green: 5
+  max_green: 60
+  reward_type: "delay_queue"
+  observation_type: "queue_wait_phase_flow"
+  add_system_info: true
+
+network:
+  rows: 4
+  cols: 4
+  edge_length: 200
+  num_lanes: 1
+  speed_limit: 13.89
+  tl_type: "static"
+
+agent:
+  name: "mappo"
+  hidden_dim: 128
+  lr: 3.0e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_param: 0.2
+  value_clip: true
+  entropy_coef: 0.01
+  value_loss_coef: 0.5
+  max_grad_norm: 0.5
+  use_rnn: false
+  rnn_hidden_dim: 128
+
+training:
+  num_episodes: 15
+  batch_size: 256
+  buffer_size: 100000
+  update_interval: 100
+  eval_interval: 5
+  num_eval_episodes: 1
+  save_interval: 10
+  use_gpu: true
+  gpus: "2,3"
+  num_workers: 4
+
+offline:
+  enabled: false
+  dataset_path: null
+  behavior_policy: "max_pressure"
+  num_offline_episodes: 50
+  conservative_weight: 10.0
+  offline_epochs: 100
+  online_finetune: true
+
+dynamic_graph:
+  enabled: true
+  graph_type: "flow"
+  neighbor_k: 2
+  edge_dim: 32
+  gat_heads: 4
+  gat_layers: 2
+
+evaluation:
+  metrics:
+    - "average_travel_time"
+    - "average_waiting_time"
+    - "queue_length"
+    - "throughput"
+    - "reward"
+  output_format: "csv"

@@ -1,0 +1,83 @@
+experiment_name: "mappo_hangzhou4x4_offline_bc_5ep_longer_lowlr_finetune"
+seed: 42
+log_dir: "./logs"
+result_dir: "./results"
+
+env:
+  name: "sumo"
+  scenario_dir: "data/datasets/libsignal/hangzhou_4x4_gudang_18041610_1h"
+  net_file: "hangzhou_4x4_gudang_18041610_1h.net.xml"
+  route_file: "hangzhou_4x4_gudang_18041610_1h.rou.xml"
+  config_file: "hangzhou_4x4_gudang_18041610_1h.sumocfg"
+  use_gui: false
+  num_seconds: 1800
+  delta_time: 5
+  yellow_time: 3
+  min_green: 5
+  max_green: 60
+  reward_type: "delay_queue"
+  observation_type: "queue_wait_phase_flow"
+  add_system_info: true
+
+network:
+  rows: 4
+  cols: 4
+  edge_length: 1000
+  num_lanes: 1
+  speed_limit: 13.89
+  tl_type: "static"
+
+robustness:
+  perturbations: []
+
+agent:
+  name: "mappo"
+  hidden_dim: 128
+  lr: 1.0e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_param: 0.2
+  value_clip: true
+  entropy_coef: 0.01
+  value_loss_coef: 0.5
+  max_grad_norm: 0.5
+  use_rnn: false
+  rnn_hidden_dim: 128
+
+training:
+  num_episodes: 15
+  batch_size: 256
+  buffer_size: 100000
+  update_interval: 100
+  eval_interval: 5
+  num_eval_episodes: 1
+  save_interval: 50
+  use_gpu: true
+  gpus: "2,3"
+  num_workers: 4
+
+offline:
+  enabled: false
+  dataset_path: null
+  behavior_policy: "max_pressure"
+  num_offline_episodes: 5
+  conservative_weight: 10.0
+  offline_epochs: 200
+  online_finetune: false
+
+dynamic_graph:
+  enabled: false
+  graph_type: "static"
+  neighbor_k: 2
+  edge_dim: 32
+  gat_heads: 4
+  gat_layers: 2
+
+evaluation:
+  metrics:
+    - "average_travel_time"
+    - "average_waiting_time"
+    - "queue_length"
+    - "throughput"
+    - "reward"
+  output_format: "csv"

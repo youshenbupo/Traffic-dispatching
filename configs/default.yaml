@@ -1,0 +1,99 @@
+# Default configuration for TSC experiments
+
+experiment_name: "default_tsc"
+seed: 42
+log_dir: "./logs"
+result_dir: "./results"
+
+# Environment
+env:
+  name: "sumo"
+  scenario_dir: "data/scenarios/grid3x3"
+  net_file: "grid.net.xml"
+  route_file: "grid.rou.xml"
+  config_file: "grid.sumocfg"
+  use_gui: false
+  num_seconds: 3600
+  delta_time: 5
+  yellow_time: 3
+  min_green: 7
+  max_green: 60
+  reward_type: "delay_queue"
+  observation_type: "queue_wait_phase_flow"
+  add_system_info: true
+
+# Network (road graph)
+network:
+  rows: 3
+  cols: 3
+  edge_length: 200
+  num_lanes: 1
+  speed_limit: 13.89
+  tl_type: "static"  # will be controlled by TraCI
+
+# Agent / Algorithm
+agent:
+  name: "mappo"
+  hidden_dim: 128
+  lr: 3.0e-4
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_param: 0.2
+  value_clip: true
+  entropy_coef: 0.01
+  value_loss_coef: 0.5
+  max_grad_norm: 0.5
+  use_rnn: false
+  rnn_hidden_dim: 128
+
+# Training
+training:
+  num_episodes: 200
+  batch_size: 256
+  buffer_size: 100000
+  update_interval: 100
+  eval_interval: 20
+  num_eval_episodes: 5
+  save_interval: 50
+  use_gpu: true
+  gpus: "2,3"
+  num_workers: 4
+
+# Offline RL (optional)
+offline:
+  enabled: false
+  dataset_path: null
+  behavior_policy: "max_pressure"  # fixed_time / max_pressure / mixed
+  num_offline_episodes: 100
+  conservative_weight: 10.0
+  offline_epochs: 100
+  online_finetune: true
+
+# Robustness (optional)
+robustness:
+  enabled: false
+  perturbations: []
+  # perturbations:
+  #   - type: "demand_spike"
+  #     scale: 1.5
+  #   - type: "sensor_noise"
+  #     std: 0.1
+
+# Dynamic communication graph (core method)
+dynamic_graph:
+  enabled: false
+  graph_type: "learned"  # static / learned / attention
+  neighbor_k: 2
+  edge_dim: 32
+  gat_heads: 4
+  gat_layers: 2
+
+# Evaluation
+evaluation:
+  metrics:
+    - "average_travel_time"
+    - "average_waiting_time"
+    - "queue_length"
+    - "throughput"
+    - "reward"
+  output_format: "csv"

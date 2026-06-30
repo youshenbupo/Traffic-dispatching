@@ -1,0 +1,5 @@
+_base_: "racc_grid4x4.yaml"
+experiment_name: "racc_grid4x4_no_reliability"
+
+dynamic_graph:
+  reliability_coef: 0.0

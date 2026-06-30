@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Environments
+.env
+.venv
+
+# Data / logs / results
+data/datasets/
+data/networks/
+data/scenarios/*/output/
+logs/
+results/
+*.log
+
+# SUMO
+*.tripinfo.xml
+*.summary.xml
+*.emission.xml
+*.queue.xml
+*.fcd.xml
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Models
+*.pth
+*.pt
+*.ckpt
+
+# Tensorboard
+runs/
