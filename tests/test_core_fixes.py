@@ -93,7 +93,7 @@ class TestMAPPOUpdate(unittest.TestCase):
         config = {
             "agent": {"hidden_dim": 16},
             "training": {"batch_size": 2, "use_gpu": False},
-            "dynamic_graph": {"enabled": False},
+            "dynamic_graph": {"enabled": False, "comm_type": "racc"},
         }
         ids = ["A", "B"]
         agent = MAPPOAgent(3, 2, ids, config)
@@ -143,6 +143,7 @@ class TestMAPPOUpdate(unittest.TestCase):
         result = agent.update()
         self.assertTrue(math.isfinite(result["mean_mappo_loss"]))
         self.assertIn("counterfactual_loss", result)
+        self.assertEqual(agent.update_count, 1)
         self.assertGreaterEqual(agent.last_comm_stats["communication_rate"], 0.0)
 
 

@@ -1,0 +1,8 @@
+_base_: "test_mappo_corrected.yaml"
+experiment_name: "test_mappo_10ep"
+
+training:
+  num_episodes: 10
+  eval_interval: 5
+  num_eval_episodes: 2
+  save_interval: 10

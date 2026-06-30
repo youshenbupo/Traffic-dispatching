@@ -43,6 +43,9 @@ class MAPPOAgent:
         self.counterfactual_coef = graph_cfg.get("counterfactual_coef", 0.1)
         self.counterfactual_samples = graph_cfg.get("counterfactual_samples", 2)
         self.counterfactual_temperature = graph_cfg.get("counterfactual_temperature", 1.0)
+        self.counterfactual_margin = graph_cfg.get("counterfactual_margin", 0.05)
+        self.comm_warmup_updates = graph_cfg.get("warmup_updates", 5)
+        self.update_count = 0
         self.last_comm_stats = {}
 
         self.device = torch.device("cuda" if torch.cuda.is_available() and config.get("training", {}).get("use_gpu", True) else "cpu")
@@ -103,9 +106,10 @@ class MAPPOAgent:
             if self.comm is not None and adj is not None:
                 adj_t = torch.FloatTensor(adj).unsqueeze(0).to(self.device)
                 if self.comm_type == "racc":
+                    hard_comm = self.update_count >= self.comm_warmup_updates
                     comm_feats, details = self.comm(
                         obs_tensor.unsqueeze(0), adj_t,
-                        return_details=True, hard=True,
+                        return_details=True, hard=hard_comm,
                     )
                     comm_feats = comm_feats.squeeze(0)
                     candidates = details["candidate_mask"].sum().clamp(min=1.0)
@@ -205,15 +209,16 @@ class MAPPOAgent:
             # Forward
             T, N, _ = obs.shape
             masks_flat = masks.reshape(T * N, -1)
+            comm_details = None
 
             if self.comm is not None:
                 # Process each timestep with GAT over agents
                 # Use per-timestep adjacency instead of only the first one
                 adj = torch.FloatTensor(np.stack([t["adj"] for t in self.buffer])).to(self.device)
-                comm_details = None
                 if self.comm_type == "racc":
+                    hard_comm = self.update_count >= self.comm_warmup_updates
                     comm_out, comm_details = self.comm(
-                        obs, adj, return_details=True, hard=True
+                        obs, adj, return_details=True, hard=hard_comm
                     )
                 else:
                     comm_out = self.comm(obs, adj)  # [T, N, hidden_dim]
@@ -252,7 +257,7 @@ class MAPPOAgent:
             comm_cost = torch.zeros((), device=self.device)
             reliability_loss = torch.zeros((), device=self.device)
             counterfactual_loss = torch.zeros((), device=self.device)
-            if self.comm_type == "racc" and comm_details is not None:
+            if self.comm is not None and self.comm_type == "racc" and comm_details is not None:
                 candidates = comm_details["candidate_mask"].sum().clamp(min=1.0)
                 comm_cost = comm_details["gate_prob"].sum() / candidates
                 reliability_loss = self.comm.reliability_loss(obs)
@@ -267,12 +272,16 @@ class MAPPOAgent:
                     cf_adj = adj.clone()
                     cf_adj[:, :, sender_id] = 0.0
                     cf_comm, _ = self.comm(
-                        obs, cf_adj, return_details=True, hard=True
+                        obs, cf_adj, return_details=True, hard=hard_comm
                     )
                     cf_state = torch.cat([obs, cf_comm], dim=-1).reshape(T, -1)
                     cf_value = self.critic(cf_state).squeeze(-1)
                     target = torch.sigmoid(
-                        (values_pred.detach() - cf_value.detach())
+                        (
+                            values_pred.detach()
+                            - cf_value.detach()
+                            - self.counterfactual_margin
+                        )
                         / max(self.counterfactual_temperature, 1e-6)
                     )
                     sender_gate = comm_details["gate_prob"][:, :, sender_id]
@@ -292,7 +301,10 @@ class MAPPOAgent:
 
                 loss = (
                     loss
-                    + self.comm_cost_coef * comm_cost
+                    + (
+                        0.0 if self.update_count < self.comm_warmup_updates
+                        else self.comm_cost_coef
+                    ) * comm_cost
                     + self.reliability_coef * reliability_loss
                     + self.counterfactual_coef * counterfactual_loss
                 )
@@ -309,8 +321,9 @@ class MAPPOAgent:
             })
 
         self.buffer = []
+        self.update_count += 1
         result = {"mean_mappo_loss": float(np.mean(total_loss))}
-        if self.comm_type == "racc" and auxiliary_metrics:
+        if self.comm is not None and self.comm_type == "racc" and auxiliary_metrics:
             for key in auxiliary_metrics[0]:
                 result[key] = float(np.mean([m[key] for m in auxiliary_metrics]))
         return result
@@ -375,6 +388,7 @@ class MAPPOAgent:
             "actor": self.actor.state_dict(),
             "critic": self.critic.state_dict(),
             "comm": self.comm.state_dict() if self.comm else None,
+            "update_count": self.update_count,
         }, os.path.join(path, "mappo.pth"))
 
     def load(self, path: str):
@@ -383,6 +397,7 @@ class MAPPOAgent:
         self._load_state_dict_flexible(self.critic, ckpt["critic"], "critic")
         if self.comm and ckpt.get("comm"):
             self._load_state_dict_flexible(self.comm, ckpt["comm"], "comm")
+        self.update_count = int(ckpt.get("update_count", self.comm_warmup_updates))
 
     @staticmethod
     def _load_state_dict_flexible(model, state_dict, name):

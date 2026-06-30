@@ -1,0 +1,15 @@
+_base_: "test_racc.yaml"
+experiment_name: "test_racc_tuned"
+
+training:
+  num_episodes: 10
+  eval_interval: 5
+  num_eval_episodes: 2
+  save_interval: 10
+
+dynamic_graph:
+  gate_threshold: 0.25
+  warmup_updates: 3
+  comm_cost_coef: 0.005
+  reliability_coef: 0.05
+  counterfactual_coef: 0.05

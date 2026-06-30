@@ -57,12 +57,14 @@ dynamic_graph:
   graph_type: "static"
   neighbor_k: 1
   gate_threshold: 0.35
+  warmup_updates: 5
   dropout: 0.0
   comm_cost_coef: 0.01
   reliability_coef: 0.1
   counterfactual_coef: 0.1
   counterfactual_samples: 2
-  counterfactual_temperature: 1.0
+  counterfactual_temperature: 0.1
+  counterfactual_margin: 0.05
 
 robustness:
   enabled: false

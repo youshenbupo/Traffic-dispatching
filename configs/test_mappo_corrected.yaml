@@ -1,0 +1,5 @@
+_base_: "test_racc.yaml"
+experiment_name: "test_mappo_corrected"
+
+dynamic_graph:
+  enabled: false

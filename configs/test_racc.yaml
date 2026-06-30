@@ -52,12 +52,14 @@ dynamic_graph:
   comm_type: "racc"
   graph_type: "static"
   neighbor_k: 1
-  gate_threshold: 0.35
+  gate_threshold: 0.25
+  warmup_updates: 3
   comm_cost_coef: 0.01
   reliability_coef: 0.1
   counterfactual_coef: 0.1
   counterfactual_samples: 1
-  counterfactual_temperature: 1.0
+  counterfactual_temperature: 0.1
+  counterfactual_margin: 0.05
 
 robustness:
   enabled: false
