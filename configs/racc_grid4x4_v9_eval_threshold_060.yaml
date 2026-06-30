@@ -1,0 +1,5 @@
+_base_: "racc_grid4x4_v9_eval.yaml"
+experiment_name: "racc_grid4x4_v9_eval_threshold_060"
+
+dynamic_graph:
+  gate_threshold: 0.6

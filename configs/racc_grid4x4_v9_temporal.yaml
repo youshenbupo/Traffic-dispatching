@@ -1,0 +1,10 @@
+_base_: "racc_grid4x4_v9_decision.yaml"
+experiment_name: "racc_grid4x4_v9_temporal"
+
+robustness:
+  enabled: true
+  perturbations:
+    - type: "agent_observation_dropout"
+      prob: 0.2
+    - type: "temporal_observation_fallback"
+      enabled: true

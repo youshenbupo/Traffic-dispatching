@@ -1,0 +1,11 @@
+_base_: "racc_grid4x4_v9_decision.yaml"
+experiment_name: "racc_grid4x4_v10_frozen_teacher"
+
+dynamic_graph:
+  decision_teacher_path: "logs/mappo_grid4x4_robust_s{seed}/final_model"
+  initialize_local_from_teacher: true
+  decision_distill_coef: 1.0
+  decision_gate_coef: 0.5
+  decision_temperature: 0.05
+  decision_margin: 0.005
+  gate_threshold: 0.5

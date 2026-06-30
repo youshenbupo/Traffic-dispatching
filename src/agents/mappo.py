@@ -42,6 +42,14 @@ class MAPPOAgent:
         self.reliability_coef = graph_cfg.get("reliability_coef", 0.1)
         self.reconstruction_coef = graph_cfg.get("reconstruction_coef", 0.0)
         self.confidence_coef = graph_cfg.get("confidence_coef", 0.0)
+        self.decision_distill_coef = graph_cfg.get(
+            "decision_distill_coef", 0.0
+        )
+        self.decision_gate_coef = graph_cfg.get("decision_gate_coef", 0.0)
+        self.decision_temperature = graph_cfg.get(
+            "decision_temperature", 0.1
+        )
+        self.decision_margin = graph_cfg.get("decision_margin", 0.0)
         self.counterfactual_coef = graph_cfg.get("counterfactual_coef", 0.1)
         self.counterfactual_samples = graph_cfg.get("counterfactual_samples", 2)
         self.counterfactual_temperature = graph_cfg.get("counterfactual_temperature", 1.0)
@@ -49,6 +57,7 @@ class MAPPOAgent:
         self.comm_warmup_updates = graph_cfg.get("warmup_updates", 5)
         self.update_count = 0
         self.last_comm_stats = {}
+        self.teacher_actor = None
 
         self.device = torch.device("cuda" if torch.cuda.is_available() and config.get("training", {}).get("use_gpu", True) else "cpu")
 
@@ -87,6 +96,30 @@ class MAPPOAgent:
             self.comm_gate = None
             self.actor = MLPActor(obs_dim, action_dim, self.hidden_dim).to(self.device)
             self.critic = MLPCritic(obs_dim * self.n_agents, self.hidden_dim).to(self.device)
+
+        teacher_path = graph_cfg.get("decision_teacher_path")
+        if teacher_path and self.comm_type == "racc":
+            teacher_path = teacher_path.format(
+                seed=config.get("seed", 42)
+            )
+            checkpoint_file = os.path.join(teacher_path, "mappo.pth")
+            checkpoint = torch.load(
+                checkpoint_file, map_location=self.device
+            )
+            self.teacher_actor = MLPActor(
+                obs_dim, action_dim, self.hidden_dim
+            ).to(self.device)
+            self.teacher_actor.load_state_dict(checkpoint["actor"])
+            self.teacher_actor.eval()
+            for parameter in self.teacher_actor.parameters():
+                parameter.requires_grad = False
+            if graph_cfg.get("initialize_local_from_teacher", True):
+                local_state = {
+                    key.removeprefix("net."): value
+                    for key, value in checkpoint["actor"].items()
+                    if key.startswith("net.")
+                }
+                self.actor.local_net.load_state_dict(local_state)
 
         params = list(self.actor.parameters()) + list(self.critic.parameters())
         if self.comm is not None:
@@ -141,11 +174,19 @@ class MAPPOAgent:
                         comm_feats, obs_tensor, obs_mask_tensor
                     )
                     confidence_scale = confidence.mean(dim=-1, keepdim=True)
-                    policy_comm = comm_feats * confidence_scale
+                    decision_confidence = self.comm.decision_confidence(
+                        comm_feats, obs_tensor
+                    )
+                    policy_comm = (
+                        comm_feats * confidence_scale * decision_confidence
+                    )
                     missing = 1.0 - obs_mask_tensor
                     missing_count = missing.sum().clamp(min=1.0)
                     self.last_comm_stats["reconstruction_confidence"] = float(
                         ((confidence * missing).sum() / missing_count).item()
+                    )
+                    self.last_comm_stats["decision_confidence"] = float(
+                        decision_confidence.mean().item()
                     )
                     if clean_obs is not None:
                         clean_tensor = torch.FloatTensor(
@@ -287,6 +328,10 @@ class MAPPOAgent:
                     policy_comm = comm_out * confidence.mean(
                         dim=-1, keepdim=True
                     )
+                    decision_confidence = self.comm.decision_confidence(
+                        comm_out, obs
+                    )
+                    policy_comm = policy_comm * decision_confidence
                     global_state = torch.cat(
                         [reconstructed, policy_comm], dim=-1
                     ).reshape(T, -1)
@@ -323,6 +368,9 @@ class MAPPOAgent:
             reliability_loss = torch.zeros((), device=self.device)
             reconstruction_loss = torch.zeros((), device=self.device)
             confidence_loss = torch.zeros((), device=self.device)
+            decision_distill_loss = torch.zeros((), device=self.device)
+            decision_gate_loss = torch.zeros((), device=self.device)
+            decision_gain = torch.zeros((), device=self.device)
             counterfactual_loss = torch.zeros((), device=self.device)
             if self.comm is not None and self.comm_type == "racc" and comm_details is not None:
                 candidates = comm_details["candidate_mask"].sum().clamp(min=1.0)
@@ -333,6 +381,103 @@ class MAPPOAgent:
                 )
                 confidence_loss = self.comm.confidence_loss(
                     comm_out, clean_obs, obs_masks
+                )
+
+                # A clean local policy is the privileged teacher. A soft
+                # communication counterfactual avoids the dead zone created
+                # when every hard gate initially falls below its threshold.
+                zero_comm = torch.zeros(
+                    T, N, self.hidden_dim, device=self.device
+                )
+                with torch.no_grad():
+                    if self.teacher_actor is not None:
+                        teacher_dist = self.teacher_actor(
+                            clean_obs.reshape(T * N, -1), masks_flat
+                        )
+                    else:
+                        teacher_dist = self.actor(
+                            torch.cat(
+                                [clean_obs, zero_comm], dim=-1
+                            ).reshape(T * N, -1),
+                            masks_flat,
+                        )
+                    fallback_dist = self.actor(
+                        torch.cat([obs, zero_comm], dim=-1).reshape(
+                            T * N, -1
+                        ),
+                        masks_flat,
+                    )
+                teacher_probs = teacher_dist.probs.detach().clamp(min=1e-8)
+                teacher_log = teacher_probs.log()
+                soft_comm = comm_details["soft_messages"]
+                soft_reconstructed, soft_recon_confidence = (
+                    self.comm.reconstruct_with_confidence(
+                        soft_comm, obs, obs_masks
+                    )
+                )
+                soft_decision_confidence = self.comm.decision_confidence(
+                    soft_comm, obs
+                )
+                soft_policy_comm = (
+                    soft_comm
+                    * soft_recon_confidence.mean(dim=-1, keepdim=True)
+                    * soft_decision_confidence
+                )
+                soft_dist = self.actor(
+                    torch.cat(
+                        [soft_reconstructed, soft_policy_comm], dim=-1
+                    ).reshape(T * N, -1),
+                    masks_flat,
+                )
+                full_log = soft_dist.probs.clamp(min=1e-8).log()
+                fallback_log = fallback_dist.probs.detach().clamp(
+                    min=1e-8
+                ).log()
+                full_kl = (
+                    teacher_probs * (teacher_log - full_log)
+                ).sum(dim=-1).reshape(T, N)
+                fallback_kl = (
+                    teacher_probs * (teacher_log - fallback_log)
+                ).sum(dim=-1).reshape(T, N)
+                corrupted = (1.0 - obs_masks).amax(dim=-1)
+                corrupted_count = corrupted.sum().clamp(min=1.0)
+                decision_distill_loss = (
+                    full_kl * corrupted
+                ).sum() / corrupted_count
+                utility = fallback_kl.detach() - full_kl.detach()
+                decision_gain = (
+                    utility * corrupted
+                ).sum() / corrupted_count
+                utility_target = torch.sigmoid(
+                    (utility - self.decision_margin)
+                    / max(self.decision_temperature, 1e-6)
+                )
+                predicted_utility = soft_decision_confidence.squeeze(-1)
+                confidence_gate_loss = (
+                    F.binary_cross_entropy(
+                        predicted_utility.clamp(1e-6, 1 - 1e-6),
+                        utility_target,
+                        reduction="none",
+                    ) * corrupted
+                ).sum() / corrupted_count
+                incoming_gate = (
+                    (
+                        comm_details["gate_prob"]
+                        * comm_details["candidate_mask"]
+                    ).sum(dim=-1)
+                    / comm_details["candidate_mask"].sum(
+                        dim=-1
+                    ).clamp(min=1.0)
+                )
+                edge_gate_loss = (
+                    F.binary_cross_entropy(
+                        incoming_gate.clamp(1e-6, 1 - 1e-6),
+                        utility_target,
+                        reduction="none",
+                    ) * corrupted
+                ).sum() / corrupted_count
+                decision_gate_loss = 0.5 * (
+                    confidence_gate_loss + edge_gate_loss
                 )
 
                 # Remove sampled senders and use the centralized critic's value
@@ -391,6 +536,8 @@ class MAPPOAgent:
                     + self.reliability_coef * reliability_loss
                     + self.reconstruction_coef * reconstruction_loss
                     + self.confidence_coef * confidence_loss
+                    + self.decision_distill_coef * decision_distill_loss
+                    + self.decision_gate_coef * decision_gate_loss
                     + self.counterfactual_coef * counterfactual_loss
                 )
 
@@ -404,6 +551,13 @@ class MAPPOAgent:
                 "reliability_loss": float(reliability_loss.detach().item()),
                 "reconstruction_loss": float(reconstruction_loss.detach().item()),
                 "confidence_loss": float(confidence_loss.detach().item()),
+                "decision_distill_loss": float(
+                    decision_distill_loss.detach().item()
+                ),
+                "decision_gate_loss": float(
+                    decision_gate_loss.detach().item()
+                ),
+                "decision_gain": float(decision_gain.detach().item()),
                 "counterfactual_loss": float(counterfactual_loss.detach().item()),
             })
 

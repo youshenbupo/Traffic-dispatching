@@ -94,3 +94,17 @@ An uncertainty-calibrated v8 was also tested. It passed grid3x3 but became
 overconfident and nearly dense on grid4x4. This establishes that calibration
 against state reconstruction error alone is insufficient; the confidence
 target must measure decision impact.
+
+## Decision-teacher prototypes
+
+v9 uses the current clean-observation policy as a teacher and supervises a
+receiver-level utility score with the reduction in teacher-to-student policy
+KL. Soft-message counterfactuals retain gradients when hard gates are closed.
+This co-adapting teacher produced almost no utility signal.
+
+v10 replaces it with a frozen clean-policy teacher and optionally initializes
+the local fallback from that teacher. This substantially improves corrupted
+control under an equal training budget, although the same-weight no-message
+ablation shows that most of the gain is not caused by online communication.
+The method should currently be described as a privileged decision-distillation
+prototype, pending component ablations and real-network validation.

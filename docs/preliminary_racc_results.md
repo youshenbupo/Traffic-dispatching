@@ -186,3 +186,57 @@ small state error yet move the signal policy in a harmful direction. The next
 gate target must be decision-aware: compare the imputed policy against a clean
 observation teacher and open communication only when it reduces policy
 divergence or improves a control-value estimate.
+
+## v9: co-adapting decision teacher
+
+v9 supervises communication with the KL divergence to the policy evaluated on
+privileged clean observations. A soft-message counterfactual prevents hard
+gates from losing all gradients. On grid4x4, three training seeds and five
+common evaluation seeds at 30% whole-agent dropout gave:
+
+| Method | Travel | Waiting | Queue | Throughput | Comm. |
+|---|---:|---:|---:|---:|---:|
+| v9 full | 99.96 | 13.01 | 0.0343 | 236.33 | 92.7% |
+| v9 same weights, no messages | 99.91 | 12.98 | 0.0342 | 236.47 | 0% |
+
+Raising the inference threshold from 0.35 to 0.50 reduced communication to
+about 5% without materially changing control. The teacher and student
+co-adapted, policy-divergence utility stayed near zero, and communication again
+provided no reproducible benefit.
+
+## Temporal fallback diagnostic
+
+A causal last-valid-observation fallback was tested as an alternative source
+of information. Against robust MAPPO with the same three training seeds,
+training budget, and five evaluation seeds:
+
+| Method | Travel | Waiting | Queue | Throughput |
+|---|---:|---:|---:|---:|
+| Robust MAPPO | 95.99 ± 1.88 | 11.32 ± 1.52 | 0.0254 ± 0.0038 | 236.60 ± 0.40 |
+| Temporal fallback | 95.31 ± 2.41 | 11.31 ± 1.50 | 0.0262 ± 0.0044 | 236.67 ± 0.46 |
+
+The fixed stale-state rule gives only a 0.7% travel-time improvement and makes
+queueing slightly worse. Temporal information remains plausible, but it needs
+a learned belief with staleness uncertainty rather than carry-forward.
+
+## v10: frozen clean-policy teacher
+
+v10 freezes a separately trained robust MAPPO teacher and initializes the
+student local policy from it. The corrupted student is trained to approach the
+teacher's clean-observation action distribution. To control for the extra ten
+training episodes, the original robust MAPPO models were also continued for
+the same budget.
+
+| Method | Travel | Waiting | Queue | Throughput | Comm. |
+|---|---:|---:|---:|---:|---:|
+| Continued robust MAPPO | 93.80 ± 0.72 | 10.08 ± 0.68 | 0.0226 ± 0.0017 | 237.07 ± 0.50 | 0% |
+| v10 full | **90.92 ± 0.71** | **8.24 ± 0.68** | **0.0183 ± 0.0020** | 237.40 ± 0.53 | 8.1% |
+| v10 same weights, no messages | 91.08 ± 0.86 | 8.35 ± 0.83 | 0.0186 ± 0.0024 | **237.47 ± 0.42** | 0% |
+
+Teacher anchoring improves travel time by 3.1%, waiting by 18.2%, and queueing
+by about 19% over the equal-budget baseline. Communication itself adds only a
+small mean improvement and changes behavior materially in one of three seeds.
+The promising contribution is therefore privileged decision distillation for
+robust TSC, not yet sparse communication. The next mandatory ablation must
+separate teacher initialization, fixed-teacher distillation, reconstruction,
+and communication during training.

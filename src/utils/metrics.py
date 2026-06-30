@@ -21,6 +21,7 @@ class MetricsTracker:
         self.observation_qualities = []
         self.reconstruction_errors = []
         self.reconstruction_confidences = []
+        self.decision_confidences = []
 
     def record_step(self, info: Dict[str, Any]):
         self.step_data.append(info)
@@ -42,6 +43,8 @@ class MetricsTracker:
             self.reconstruction_errors.append(info["reconstruction_error"])
         if "reconstruction_confidence" in info:
             self.reconstruction_confidences.append(info["reconstruction_confidence"])
+        if "decision_confidence" in info:
+            self.decision_confidences.append(info["decision_confidence"])
 
     def finalize(self, arrived_vehicles: List[Dict[str, Any]]):
         """Finalize episode metrics using arrived vehicle data."""
@@ -70,6 +73,10 @@ class MetricsTracker:
         if self.reconstruction_confidences:
             result["reconstruction_confidence"] = float(
                 np.mean(self.reconstruction_confidences)
+            )
+        if self.decision_confidences:
+            result["decision_confidence"] = float(
+                np.mean(self.decision_confidences)
             )
         return result
 

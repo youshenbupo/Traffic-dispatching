@@ -109,6 +109,19 @@ class TestMAPPOUpdate(unittest.TestCase):
         self.assertTrue(torch.all(active_confidence >= 0))
         self.assertTrue(torch.all(active_confidence <= 1))
 
+    def test_no_message_has_zero_decision_confidence(self):
+        import torch
+
+        layer = ReliabilityAwareCommLayer(4, 8)
+        observed = torch.randn(2, 3, 4)
+        no_messages = torch.zeros(2, 3, 8)
+        confidence = layer.decision_confidence(no_messages, observed)
+        self.assertTrue(torch.equal(confidence, torch.zeros_like(confidence)))
+        messages = torch.randn(2, 3, 8)
+        active = layer.decision_confidence(messages, observed)
+        self.assertTrue(torch.all(active >= 0))
+        self.assertTrue(torch.all(active <= 1))
+
     def test_residual_actor_starts_as_local_policy(self):
         import torch
 

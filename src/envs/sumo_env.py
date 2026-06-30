@@ -64,6 +64,8 @@ class SUMOMultiAgentEnv:
         self.sensor_noise_std = 0.0
         self.obs_dropout_prob = 0.0
         self.agent_obs_dropout_prob = 0.0
+        self.temporal_observation_fallback = False
+        self.cached_valid_observations: Dict[str, np.ndarray] = {}
         self.demand_scale = 1.0
         self.last_observation_quality: Dict[str, float] = {}
         self.last_clean_observations: Dict[str, np.ndarray] = {}
@@ -79,6 +81,8 @@ class SUMOMultiAgentEnv:
                 self.obs_dropout_prob = p.get("prob", 0.0)
             elif p["type"] == "agent_observation_dropout":
                 self.agent_obs_dropout_prob = p.get("prob", 0.0)
+            elif p["type"] == "temporal_observation_fallback":
+                self.temporal_observation_fallback = p.get("enabled", True)
             elif p["type"] == "demand_spike":
                 self.demand_scale = p.get("scale", 1.0)
 
@@ -210,6 +214,7 @@ class SUMOMultiAgentEnv:
         self.vehicle_subscriptions = {}
         self.arrived_vehicle_info = []
         self.last_step_arrived_count = 0
+        self.cached_valid_observations = {}
         obs = self._get_observations()
         info = {"num_agents": self.num_agents, "tls_ids": self.tls_ids}
         return obs, info
@@ -380,6 +385,23 @@ class SUMOMultiAgentEnv:
                     feat[:n_lane_features] = 0.0
                     observation_mask[:n_lane_features] = 0.0
                     quality = 0.0
+
+            # Last-observation carry-forward is a causal temporal baseline:
+            # it uses only measurements seen before the current failure and
+            # keeps the mask at zero so no feature is mislabeled as observed.
+            if self.temporal_observation_fallback:
+                previous = self.cached_valid_observations.get(tl_id)
+                missing = observation_mask[:n_lane_features] == 0.0
+                if previous is not None:
+                    feat[:n_lane_features][missing] = previous[missing]
+                current_cache = (
+                    previous.copy()
+                    if previous is not None
+                    else np.zeros(n_lane_features, dtype=np.float32)
+                )
+                valid = ~missing
+                current_cache[valid] = feat[:n_lane_features][valid]
+                self.cached_valid_observations[tl_id] = current_cache
 
             obs[tl_id] = feat
             self.last_clean_observations[tl_id] = clean_feat

@@ -1,0 +1,10 @@
+_base_: "mappo_grid4x4_temporal_pilot.yaml"
+experiment_name: "mappo_grid4x4_temporal_eval"
+
+robustness:
+  enabled: true
+  perturbations:
+    - type: "agent_observation_dropout"
+      prob: 0.3
+    - type: "temporal_observation_fallback"
+      enabled: true

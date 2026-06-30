@@ -1,0 +1,11 @@
+_base_: "racc_grid4x4_v8_uncertainty.yaml"
+experiment_name: "racc_grid4x4_v9_decision"
+
+dynamic_graph:
+  confidence_coef: 0.0
+  decision_distill_coef: 0.5
+  decision_gate_coef: 0.25
+  decision_temperature: 0.1
+  decision_margin: 0.01
+  comm_cost_coef: 0.02
+  gate_threshold: 0.35

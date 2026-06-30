@@ -1,0 +1,16 @@
+_base_: "mappo_grid4x4_robust_pilot.yaml"
+experiment_name: "mappo_grid4x4_temporal_pilot"
+
+training:
+  num_episodes: 10
+  eval_interval: 5
+  num_eval_episodes: 2
+  save_interval: 10
+
+robustness:
+  enabled: true
+  perturbations:
+    - type: "agent_observation_dropout"
+      prob: 0.2
+    - type: "temporal_observation_fallback"
+      enabled: true

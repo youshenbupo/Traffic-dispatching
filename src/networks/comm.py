@@ -73,9 +73,16 @@ class ReliabilityAwareCommLayer(nn.Module):
         # Bias-free so zero accepted messages cannot hallucinate a state.
         self.reconstruction_head = nn.Linear(out_dim, in_dim, bias=False)
         self.confidence_head = nn.Linear(out_dim, in_dim)
+        self.decision_head = nn.Sequential(
+            nn.Linear(out_dim + in_dim, out_dim),
+            nn.ReLU(),
+            nn.Linear(out_dim, 1),
+        )
         nn.init.zeros_(self.reconstruction_head.weight)
         nn.init.zeros_(self.confidence_head.weight)
         nn.init.zeros_(self.confidence_head.bias)
+        nn.init.zeros_(self.decision_head[-1].weight)
+        nn.init.zeros_(self.decision_head[-1].bias)
         self.reliability_head = nn.Sequential(
             nn.Linear(in_dim, out_dim),
             nn.ReLU(),
@@ -129,6 +136,11 @@ class ReliabilityAwareCommLayer(nn.Module):
         aggregated = (weights * messages).sum(dim=2)
         aggregated = aggregated / weights.sum(dim=2).clamp(min=1.0)
         aggregated = self.dropout(aggregated)
+        soft_weights = gate_prob.unsqueeze(-1)
+        soft_aggregated = (soft_weights * messages).sum(dim=2)
+        soft_aggregated = soft_aggregated / soft_weights.sum(
+            dim=2
+        ).clamp(min=1.0)
 
         if not return_details:
             return aggregated
@@ -137,6 +149,7 @@ class ReliabilityAwareCommLayer(nn.Module):
             "hard_gate": hard_gate * candidate_mask,
             "candidate_mask": candidate_mask,
             "reliability": reliability.squeeze(-1),
+            "soft_messages": soft_aggregated,
         }
 
     def reconstruct(
@@ -167,6 +180,20 @@ class ReliabilityAwareCommLayer(nn.Module):
         imputed = confidence * predicted + (1.0 - confidence) * observed
         reconstructed = observed * mask + imputed * (1.0 - mask)
         return reconstructed, confidence
+
+    def decision_confidence(
+        self,
+        messages: torch.Tensor,
+        observed: torch.Tensor,
+    ) -> torch.Tensor:
+        """Estimate whether accepted messages improve the receiver's action."""
+        message_present = (
+            messages.abs().sum(dim=-1, keepdim=True) > 1e-8
+        ).to(observed.dtype)
+        score = torch.sigmoid(
+            self.decision_head(torch.cat([messages, observed], dim=-1))
+        )
+        return score * message_present
 
     def reconstruction_loss(
         self,
