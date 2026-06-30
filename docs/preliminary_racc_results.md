@@ -96,3 +96,54 @@ network branch. The recommended direction is masked local-state reconstruction:
 
 Only proceed to full experiments if communication beats the same-weight
 no-message ablation across at least three training seeds.
+
+## v7: masked local-state reconstruction
+
+v7 retains clean observations only during centralized training. For missing
+features, a bias-free decoder predicts the local state from accepted neighbor
+messages. The policy consumes the reconstructed local state, while rejecting
+all messages still gives an exact corrupted-local fallback.
+
+### Grid3x3 admission test
+
+Three training seeds, five paired evaluation traffic seeds, 30% whole-agent
+observation dropout:
+
+| Method | Travel | Waiting | Queue | Reconstruction error | Comm. |
+|---|---:|---:|---:|---:|---:|
+| v7 full | 84.20 | 12.99 | 0.0648 | 0.1374 | 36.6% |
+| v7 same weights, no messages | 84.72 | 13.39 | 0.0663 | 0.1452 | 0% |
+
+Communication improved travel time, waiting time, and reconstruction error in
+all three training seeds, so v7 passed the small-scale admission test.
+
+### Grid4x4 multi-seed result
+
+Three training seeds, five paired evaluation traffic seeds, 30% whole-agent
+observation dropout:
+
+| Method | Travel | Waiting | Queue | Throughput | Reconstruction error | Comm. |
+|---|---:|---:|---:|---:|---:|---:|
+| Robust MAPPO | 98.11 | 11.57 | 0.0253 | 229.07 | — | 0% |
+| v7 full | 96.17 | 9.80 | 0.0209 | 229.40 | 0.0545 | 57.4% |
+| v7 same weights, no messages | 95.13 | 9.28 | 0.0198 | 229.87 | 0.0573 | 0% |
+
+The decoder reduced reconstruction error in every seed, but full communication
+made every control metric worse than the same-weight no-message policy in every
+seed. The apparent advantage over MAPPO therefore still cannot be attributed
+to communication.
+
+## Updated decision
+
+v7 demonstrates that neighbor messages contain predictive information, but
+blindly substituting reconstructed values introduces enough bias to harm
+control. Do not scale v7 to the full study.
+
+The next candidate should use uncertainty-calibrated imputation:
+
+1. predict both missing state and reconstruction uncertainty;
+2. keep missing local features at their fallback values unless confidence is
+   high;
+3. expose reconstruction confidence to the policy;
+4. penalize control sensitivity to low-confidence reconstructions;
+5. repeat the same-weight full/no-message test before comparison with MAPPO.

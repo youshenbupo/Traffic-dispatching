@@ -77,3 +77,15 @@ selection must use validation seeds; final claims must use untouched test seeds.
 
 The old checkpoints are not comparable: the corrected environment removes
 yellow phases from the policy action space and enforces yellow transitions.
+
+## Masked reconstruction prototype
+
+The current experimental branch adds a bias-free decoder from accepted
+neighbor messages to missing local features. Clean observations are privileged
+training targets only. A feature mask ensures observed values are never
+overwritten, and zero accepted messages produce exactly the corrupted local
+observation.
+
+This prototype improves reconstruction error but does not yet improve control
+over the same-weight no-message ablation on grid4x4. Reconstruction uncertainty
+must be calibrated before this mechanism is presented as the final method.

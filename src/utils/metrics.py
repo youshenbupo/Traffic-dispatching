@@ -19,6 +19,7 @@ class MetricsTracker:
         self.communication_rates = []
         self.mean_reliabilities = []
         self.observation_qualities = []
+        self.reconstruction_errors = []
 
     def record_step(self, info: Dict[str, Any]):
         self.step_data.append(info)
@@ -36,6 +37,8 @@ class MetricsTracker:
             self.mean_reliabilities.append(info["mean_reliability"])
         if "observation_quality" in info:
             self.observation_qualities.append(info["observation_quality"])
+        if "reconstruction_error" in info:
+            self.reconstruction_errors.append(info["reconstruction_error"])
 
     def finalize(self, arrived_vehicles: List[Dict[str, Any]]):
         """Finalize episode metrics using arrived vehicle data."""
@@ -59,6 +62,8 @@ class MetricsTracker:
             result["mean_reliability"] = float(np.mean(self.mean_reliabilities))
         if self.observation_qualities:
             result["observation_quality"] = float(np.mean(self.observation_qualities))
+        if self.reconstruction_errors:
+            result["reconstruction_error"] = float(np.mean(self.reconstruction_errors))
         return result
 
     @staticmethod

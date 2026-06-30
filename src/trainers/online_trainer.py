@@ -8,13 +8,19 @@ from src.utils.metrics import MetricsTracker
 from src.utils.csv_logger import CSVLogger
 
 
-def _agent_act(agent, obs, masks, adj, explore=True):
+def _agent_act(
+    agent, obs, masks, adj, explore=True, obs_mask=None, clean_obs=None
+):
     """Call agent.act and normalize return to (actions, log_probs, values)."""
     import inspect
     sig = inspect.signature(agent.act)
     kwargs = {"explore": explore}
     if "adj" in sig.parameters:
         kwargs["adj"] = adj
+    if "obs_mask" in sig.parameters:
+        kwargs["obs_mask"] = obs_mask
+    if "clean_obs" in sig.parameters:
+        kwargs["clean_obs"] = clean_obs
     result = agent.act(obs, masks, **kwargs)
     if isinstance(result, tuple):
         actions, log_probs, values = result
@@ -54,15 +60,43 @@ class OnlineTrainer:
 
             while not done:
                 masks = self.env.get_legal_actions()
+                clean_obs = {
+                    aid: value.copy()
+                    for aid, value in self.env.last_clean_observations.items()
+                }
+                obs_mask = {
+                    aid: value.copy()
+                    for aid, value in self.env.last_observation_masks.items()
+                }
                 adj = self.env.get_adjacency(
                     mode=self.graph_type, k=self.neighbor_k
                 )
-                actions, log_probs, values = _agent_act(self.agent, obs, masks, adj, explore=True)
+                actions, log_probs, values = _agent_act(
+                    self.agent, obs, masks, adj, explore=True,
+                    obs_mask=obs_mask, clean_obs=clean_obs,
+                )
 
                 if hasattr(self.agent, "store_transition") and log_probs is not None:
-                    self.agent.store_transition(obs, actions,
-                                                {aid: 0.0 for aid in self.env.agent_ids},
-                                                values, log_probs, masks, adj, False)
+                    import inspect
+                    transition = {
+                        "obs": obs,
+                        "action": actions,
+                        "reward": {aid: 0.0 for aid in self.env.agent_ids},
+                        "value": values,
+                        "log_prob": log_probs,
+                        "mask": masks,
+                        "done": False,
+                    }
+                    parameters = inspect.signature(
+                        self.agent.store_transition
+                    ).parameters
+                    if "adj" in parameters:
+                        transition["adj"] = adj
+                    if "clean_obs" in parameters:
+                        transition["clean_obs"] = clean_obs
+                    if "obs_mask" in parameters:
+                        transition["obs_mask"] = obs_mask
+                    self.agent.store_transition(**transition)
 
                 next_obs, rewards, terminated, truncated, info_step = self.env.step(actions)
                 done = terminated or truncated
@@ -137,7 +171,18 @@ class OnlineTrainer:
                 adj = self.env.get_adjacency(
                     mode=self.graph_type, k=self.neighbor_k
                 )
-                actions, _, _ = _agent_act(self.agent, obs, masks, adj, explore=False)
+                obs_mask = {
+                    aid: value.copy()
+                    for aid, value in self.env.last_observation_masks.items()
+                }
+                clean_obs = {
+                    aid: value.copy()
+                    for aid, value in self.env.last_clean_observations.items()
+                }
+                actions, _, _ = _agent_act(
+                    self.agent, obs, masks, adj, explore=False,
+                    obs_mask=obs_mask, clean_obs=clean_obs,
+                )
                 next_obs, rewards, terminated, truncated, info_step = self.env.step(actions)
                 done = terminated or truncated
                 step_metrics = MetricsTracker.compute_from_env(self.env)

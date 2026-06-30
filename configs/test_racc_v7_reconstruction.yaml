@@ -1,0 +1,9 @@
+_base_: "test_racc_v6_train_agent_dropout.yaml"
+experiment_name: "test_racc_v7_reconstruction"
+
+dynamic_graph:
+  reconstruction_coef: 1.0
+  counterfactual_coef: 0.0
+  counterfactual_samples: 0
+  comm_cost_coef: 0.01
+  gate_threshold: 0.35

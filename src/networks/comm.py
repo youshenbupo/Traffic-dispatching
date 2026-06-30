@@ -70,6 +70,9 @@ class ReliabilityAwareCommLayer(nn.Module):
             nn.LayerNorm(out_dim),
         )
         self.message = nn.Linear(out_dim, out_dim)
+        # Bias-free so zero accepted messages cannot hallucinate a state.
+        self.reconstruction_head = nn.Linear(out_dim, in_dim, bias=False)
+        nn.init.zeros_(self.reconstruction_head.weight)
         self.reliability_head = nn.Sequential(
             nn.Linear(in_dim, out_dim),
             nn.ReLU(),
@@ -132,6 +135,36 @@ class ReliabilityAwareCommLayer(nn.Module):
             "candidate_mask": candidate_mask,
             "reliability": reliability.squeeze(-1),
         }
+
+    def reconstruct(
+        self,
+        messages: torch.Tensor,
+        observed: torch.Tensor,
+        observation_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """Fill only missing features using accepted neighbor messages."""
+        predicted = self.reconstruction_head(messages)
+        mask = observation_mask.to(observed.dtype)
+        return observed * mask + predicted * (1.0 - mask)
+
+    def reconstruction_loss(
+        self,
+        reconstructed: torch.Tensor,
+        clean_target: torch.Tensor,
+        observation_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        missing = 1.0 - observation_mask.to(clean_target.dtype)
+        count = missing.sum()
+        if count.item() == 0:
+            return reconstructed.sum() * 0.0
+        scale = clean_target.detach().abs().mean(
+            dim=tuple(range(clean_target.dim() - 1)),
+            keepdim=True,
+        ).clamp(min=1.0)
+        per_feature = F.smooth_l1_loss(
+            reconstructed / scale, clean_target / scale, reduction="none"
+        )
+        return (per_feature * missing).sum() / count
 
     def reliability_loss(
         self,

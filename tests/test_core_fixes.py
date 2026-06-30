@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.agents.mappo import MAPPOAgent
 from src.envs.sumo_env import SUMOMultiAgentEnv
 from src.networks.base import ResidualCommActor
+from src.networks.comm import ReliabilityAwareCommLayer
 from src.utils.metrics import MetricsTracker
 from src.utils.config import load_config
 
@@ -90,6 +91,16 @@ class TestConfig(unittest.TestCase):
 
 
 class TestMAPPOUpdate(unittest.TestCase):
+    def test_no_message_reconstruction_cannot_hallucinate(self):
+        import torch
+
+        layer = ReliabilityAwareCommLayer(3, 4)
+        observed = torch.tensor([[[1.0, 0.0, 3.0]]])
+        mask = torch.tensor([[[1.0, 0.0, 1.0]]])
+        messages = torch.zeros(1, 1, 4)
+        reconstructed = layer.reconstruct(messages, observed, mask)
+        self.assertTrue(torch.allclose(reconstructed, observed))
+
     def test_residual_actor_starts_as_local_policy(self):
         import torch
 

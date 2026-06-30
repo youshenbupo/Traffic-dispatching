@@ -71,7 +71,18 @@ def main():
         while not done:
             masks = env.get_legal_actions()
             adj = env.get_adjacency(mode=graph_type, k=neighbor_k)
-            actions, _, _ = _agent_act(agent, obs, masks, adj, explore=False)
+            obs_mask = {
+                aid: value.copy()
+                for aid, value in env.last_observation_masks.items()
+            }
+            clean_obs = {
+                aid: value.copy()
+                for aid, value in env.last_clean_observations.items()
+            }
+            actions, _, _ = _agent_act(
+                agent, obs, masks, adj, explore=False,
+                obs_mask=obs_mask, clean_obs=clean_obs,
+            )
             next_obs, rewards, terminated, truncated, info_step = env.step(actions)
             done = terminated or truncated
             step_metrics = MetricsTracker.compute_from_env(env)

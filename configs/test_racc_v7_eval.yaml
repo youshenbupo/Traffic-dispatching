@@ -1,0 +1,8 @@
+_base_: "test_racc_v7_reconstruction.yaml"
+experiment_name: "test_racc_v7_eval"
+
+robustness:
+  enabled: true
+  perturbations:
+    - type: "agent_observation_dropout"
+      prob: 0.3

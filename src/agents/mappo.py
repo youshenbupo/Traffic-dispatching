@@ -40,6 +40,7 @@ class MAPPOAgent:
         graph_cfg = config.get("dynamic_graph", {})
         self.comm_cost_coef = graph_cfg.get("comm_cost_coef", 0.01)
         self.reliability_coef = graph_cfg.get("reliability_coef", 0.1)
+        self.reconstruction_coef = graph_cfg.get("reconstruction_coef", 0.0)
         self.counterfactual_coef = graph_cfg.get("counterfactual_coef", 0.1)
         self.counterfactual_samples = graph_cfg.get("counterfactual_samples", 2)
         self.counterfactual_temperature = graph_cfg.get("counterfactual_temperature", 1.0)
@@ -96,8 +97,16 @@ class MAPPOAgent:
         self.buffer = []
 
     def act(self, obs: Dict[str, np.ndarray], masks: Dict[str, np.ndarray] = None,
-            explore: bool = True, adj: np.ndarray = None) -> Dict[str, int]:
+            explore: bool = True, adj: np.ndarray = None,
+            obs_mask: Dict[str, np.ndarray] = None,
+            clean_obs: Dict[str, np.ndarray] = None) -> Dict[str, int]:
         obs_tensor = torch.FloatTensor(np.stack([obs[aid] for aid in self.agent_ids])).to(self.device)
+        if obs_mask is None:
+            obs_mask_tensor = torch.ones_like(obs_tensor)
+        else:
+            obs_mask_tensor = torch.FloatTensor(
+                np.stack([obs_mask[aid] for aid in self.agent_ids])
+            ).to(self.device)
         mask_tensor = None
         if masks is not None:
             mask_tensor = torch.BoolTensor(np.stack([masks[aid] for aid in self.agent_ids])).to(self.device)
@@ -127,10 +136,28 @@ class MAPPOAgent:
                     gate = torch.sigmoid(self.comm_gate(obs_tensor))
                     comm_feats = gate * comm_feats
                 if self.comm_type == "racc":
+                    reconstructed = self.comm.reconstruct(
+                        comm_feats, obs_tensor, obs_mask_tensor
+                    )
+                    if clean_obs is not None:
+                        clean_tensor = torch.FloatTensor(
+                            np.stack([
+                                clean_obs[aid] for aid in self.agent_ids
+                            ])
+                        ).to(self.device)
+                        self.last_comm_stats["reconstruction_error"] = float(
+                            self.comm.reconstruction_loss(
+                                reconstructed,
+                                clean_tensor,
+                                obs_mask_tensor,
+                            ).item()
+                        )
                     global_state = torch.cat(
-                        [obs_tensor, comm_feats], dim=-1
+                        [reconstructed, comm_feats], dim=-1
                     ).reshape(1, -1)
-                    actor_input = torch.cat([obs_tensor, comm_feats], dim=-1)
+                    actor_input = torch.cat(
+                        [reconstructed, comm_feats], dim=-1
+                    )
                 else:
                     global_state = comm_feats.reshape(1, -1)
                 if self.comm_type != "racc" and self.comm_target == "critic":
@@ -156,7 +183,10 @@ class MAPPOAgent:
 
         return actions, log_probs, values
 
-    def store_transition(self, obs, action, reward, value, log_prob, mask, adj, done):
+    def store_transition(
+        self, obs, action, reward, value, log_prob, mask, adj, done,
+        clean_obs=None, obs_mask=None,
+    ):
         self.buffer.append({
             "obs": obs,
             "action": action,
@@ -166,6 +196,8 @@ class MAPPOAgent:
             "mask": mask,
             "adj": adj,
             "done": done,
+            "clean_obs": clean_obs if clean_obs is not None else obs,
+            "obs_mask": obs_mask,
         })
 
     def _compute_advantages(self, rewards, values, dones):
@@ -194,6 +226,21 @@ class MAPPOAgent:
         actions = torch.LongTensor(np.stack([[t["action"][aid] for aid in self.agent_ids] for t in self.buffer])).to(self.device)
         old_log_probs = torch.FloatTensor(np.stack([[t["log_prob"][aid] for aid in self.agent_ids] for t in self.buffer])).to(self.device)
         masks = torch.BoolTensor(np.stack([np.stack([t["mask"][aid] for aid in self.agent_ids]) for t in self.buffer])).to(self.device)
+        clean_obs = torch.FloatTensor(np.stack([
+            np.stack([t.get("clean_obs", t["obs"])[aid] for aid in self.agent_ids])
+            for t in self.buffer
+        ])).to(self.device)
+        obs_masks = torch.FloatTensor(np.stack([
+            np.stack([
+                (
+                    t["obs_mask"][aid]
+                    if t.get("obs_mask") is not None
+                    else np.ones_like(t["obs"][aid], dtype=np.float32)
+                )
+                for aid in self.agent_ids
+            ])
+            for t in self.buffer
+        ])).to(self.device)
 
         rewards = np.array([np.mean([t["reward"][aid] for aid in self.agent_ids]) for t in self.buffer])
         values = np.array([np.mean([t["value"][aid] for aid in self.agent_ids]) for t in self.buffer])
@@ -226,8 +273,15 @@ class MAPPOAgent:
                     gate = torch.sigmoid(self.comm_gate(obs))
                     comm_out = gate * comm_out
                 if self.comm_type == "racc":
-                    global_state = torch.cat([obs, comm_out], dim=-1).reshape(T, -1)
-                    actor_input = torch.cat([obs, comm_out], dim=-1)
+                    reconstructed = self.comm.reconstruct(
+                        comm_out, obs, obs_masks
+                    )
+                    global_state = torch.cat(
+                        [reconstructed, comm_out], dim=-1
+                    ).reshape(T, -1)
+                    actor_input = torch.cat(
+                        [reconstructed, comm_out], dim=-1
+                    )
                 else:
                     global_state = comm_out.reshape(T, -1)
                 if self.comm_type != "racc" and self.comm_target == "critic":
@@ -256,11 +310,15 @@ class MAPPOAgent:
 
             comm_cost = torch.zeros((), device=self.device)
             reliability_loss = torch.zeros((), device=self.device)
+            reconstruction_loss = torch.zeros((), device=self.device)
             counterfactual_loss = torch.zeros((), device=self.device)
             if self.comm is not None and self.comm_type == "racc" and comm_details is not None:
                 candidates = comm_details["candidate_mask"].sum().clamp(min=1.0)
                 comm_cost = comm_details["gate_prob"].sum() / candidates
                 reliability_loss = self.comm.reliability_loss(obs)
+                reconstruction_loss = self.comm.reconstruction_loss(
+                    reconstructed, clean_obs, obs_masks
+                )
 
                 # Remove sampled senders and use the centralized critic's value
                 # change as a detached target for their average outgoing gate.
@@ -274,7 +332,12 @@ class MAPPOAgent:
                     cf_comm, _ = self.comm(
                         obs, cf_adj, return_details=True, hard=hard_comm
                     )
-                    cf_state = torch.cat([obs, cf_comm], dim=-1).reshape(T, -1)
+                    cf_reconstructed = self.comm.reconstruct(
+                        cf_comm, obs, obs_masks
+                    )
+                    cf_state = torch.cat(
+                        [cf_reconstructed, cf_comm], dim=-1
+                    ).reshape(T, -1)
                     cf_value = self.critic(cf_state).squeeze(-1)
                     target = torch.sigmoid(
                         (
@@ -306,6 +369,7 @@ class MAPPOAgent:
                         else self.comm_cost_coef
                     ) * comm_cost
                     + self.reliability_coef * reliability_loss
+                    + self.reconstruction_coef * reconstruction_loss
                     + self.counterfactual_coef * counterfactual_loss
                 )
 
@@ -317,6 +381,7 @@ class MAPPOAgent:
             auxiliary_metrics.append({
                 "comm_rate": float(comm_cost.detach().item()),
                 "reliability_loss": float(reliability_loss.detach().item()),
+                "reconstruction_loss": float(reconstruction_loss.detach().item()),
                 "counterfactual_loss": float(counterfactual_loss.detach().item()),
             })
 

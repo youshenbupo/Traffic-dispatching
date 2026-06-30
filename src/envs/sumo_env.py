@@ -66,6 +66,8 @@ class SUMOMultiAgentEnv:
         self.agent_obs_dropout_prob = 0.0
         self.demand_scale = 1.0
         self.last_observation_quality: Dict[str, float] = {}
+        self.last_clean_observations: Dict[str, np.ndarray] = {}
+        self.last_observation_masks: Dict[str, np.ndarray] = {}
         self._parse_perturbations()
         self.demand_spike_seed_offset = 0
 
@@ -321,6 +323,8 @@ class SUMOMultiAgentEnv:
     def _get_observations(self) -> Dict[str, np.ndarray]:
         obs = {}
         self.last_observation_quality = {}
+        self.last_clean_observations = {}
+        self.last_observation_masks = {}
         for tl_id in self.tls_ids:
             lanes = self.incoming_lanes[tl_id]
             queues = []
@@ -336,6 +340,9 @@ class SUMOMultiAgentEnv:
                 # Flow: vehicle count
                 flows.append(self.sumo.lane.getLastStepVehicleNumber(lane))
 
+            clean_queues = list(queues)
+            clean_waits = list(waits)
+
             # Add sensor noise if configured
             if self.sensor_noise_std > 0:
                 queues = [max(0, q + np.random.normal(0, self.sensor_noise_std)) for q in queues]
@@ -344,6 +351,12 @@ class SUMOMultiAgentEnv:
             phase_onehot = np.zeros(len(self.phases[tl_id]), dtype=np.float32)
             phase_onehot[self.current_phase[tl_id]] = 1.0
 
+            clean_feat = np.concatenate([
+                np.array(clean_queues, dtype=np.float32),
+                np.array(clean_waits, dtype=np.float32),
+                np.array(flows, dtype=np.float32),
+                phase_onehot,
+            ])
             feat = np.concatenate([
                 np.array(queues, dtype=np.float32),
                 np.array(waits, dtype=np.float32),
@@ -353,18 +366,24 @@ class SUMOMultiAgentEnv:
 
             # Apply observation dropout on lane-based features only
             quality = 1.0
+            observation_mask = np.ones_like(feat, dtype=np.float32)
+            n_lane_features = len(queues) + len(waits) + len(flows)
+            if self.sensor_noise_std > 0:
+                observation_mask[:len(queues) + len(waits)] = 0.0
             if self.obs_dropout_prob > 0:
-                n_lane_features = len(queues) + len(waits) + len(flows)
                 mask = np.random.rand(n_lane_features) > self.obs_dropout_prob
                 feat[:n_lane_features] *= mask.astype(np.float32)
+                observation_mask[:n_lane_features] *= mask.astype(np.float32)
                 quality *= float(mask.mean())
             if self.agent_obs_dropout_prob > 0:
                 if np.random.rand() < self.agent_obs_dropout_prob:
-                    n_lane_features = len(queues) + len(waits) + len(flows)
                     feat[:n_lane_features] = 0.0
+                    observation_mask[:n_lane_features] = 0.0
                     quality = 0.0
 
             obs[tl_id] = feat
+            self.last_clean_observations[tl_id] = clean_feat
+            self.last_observation_masks[tl_id] = observation_mask
             self.last_observation_quality[tl_id] = quality
         return obs
 
