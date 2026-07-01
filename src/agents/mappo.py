@@ -85,6 +85,12 @@ class MAPPOAgent:
         self.failure_gated_actor = graph_cfg.get(
             "failure_gated_actor", False
         )
+        self.failure_age_conditioning = graph_cfg.get(
+            "failure_age_conditioning", False
+        )
+        self.failure_age_max = float(
+            graph_cfg.get("failure_age_max", 20.0)
+        )
 
         self.device = torch.device("cuda" if torch.cuda.is_available() and config.get("training", {}).get("use_gpu", True) else "cpu")
 
@@ -167,10 +173,39 @@ class MAPPOAgent:
 
         self.buffer = []
 
+    def _inject_failure_context(
+        self, policy_features, observation_masks, failure_ages=None
+    ):
+        """Reserve auxiliary channels for failure presence and normalized age."""
+        if not self.failure_gated_actor:
+            return policy_features
+        result = policy_features.clone()
+        missing = (1.0 - observation_masks).amax(
+            dim=-1, keepdim=True
+        )
+        result[..., :1] = missing
+        if (
+            self.failure_age_conditioning
+            and result.shape[-1] > 1
+            and failure_ages is not None
+        ):
+            ages = torch.as_tensor(
+                failure_ages, dtype=result.dtype, device=result.device
+            )
+            if ages.ndim == result.ndim - 1:
+                ages = ages.unsqueeze(-1)
+            scale = np.log1p(max(self.failure_age_max, 1.0))
+            normalized_age = torch.log1p(
+                ages.clamp(min=0.0, max=self.failure_age_max)
+            ) / scale
+            result[..., 1:2] = normalized_age * missing
+        return result
+
     def act(self, obs: Dict[str, np.ndarray], masks: Dict[str, np.ndarray] = None,
             explore: bool = True, adj: np.ndarray = None,
             obs_mask: Dict[str, np.ndarray] = None,
-            clean_obs: Dict[str, np.ndarray] = None) -> Dict[str, int]:
+            clean_obs: Dict[str, np.ndarray] = None,
+            failure_age: Dict[str, float] = None) -> Dict[str, int]:
         obs_tensor = torch.FloatTensor(np.stack([obs[aid] for aid in self.agent_ids])).to(self.device)
         if obs_mask is None:
             obs_mask_tensor = torch.ones_like(obs_tensor)
@@ -218,10 +253,15 @@ class MAPPOAgent:
                         comm_feats * confidence_scale * decision_confidence
                     )
                     if self.failure_gated_actor:
-                        policy_comm = policy_comm.clone()
-                        policy_comm[..., :1] = (
-                            1.0 - obs_mask_tensor
-                        ).amax(dim=-1, keepdim=True)
+                        age_values = None
+                        if failure_age is not None:
+                            age_values = np.array([
+                                failure_age.get(aid, 0.0)
+                                for aid in self.agent_ids
+                            ], dtype=np.float32)
+                        policy_comm = self._inject_failure_context(
+                            policy_comm, obs_mask_tensor, age_values
+                        )
                     missing = 1.0 - obs_mask_tensor
                     missing_count = missing.sum().clamp(min=1.0)
                     self.last_comm_stats["reconstruction_confidence"] = float(
@@ -276,7 +316,7 @@ class MAPPOAgent:
 
     def store_transition(
         self, obs, action, reward, value, log_prob, mask, adj, done,
-        clean_obs=None, obs_mask=None,
+        clean_obs=None, obs_mask=None, failure_age=None,
     ):
         self.buffer.append({
             "obs": obs,
@@ -289,6 +329,7 @@ class MAPPOAgent:
             "done": done,
             "clean_obs": clean_obs if clean_obs is not None else obs,
             "obs_mask": obs_mask,
+            "failure_age": failure_age,
         })
 
     def _compute_advantages(self, rewards, values, dones):
@@ -330,6 +371,17 @@ class MAPPOAgent:
                 )
                 for aid in self.agent_ids
             ])
+            for t in self.buffer
+        ])).to(self.device)
+        failure_ages = torch.FloatTensor(np.stack([
+            np.array([
+                (
+                    t["failure_age"].get(aid, 0.0)
+                    if t.get("failure_age") is not None
+                    else 0.0
+                )
+                for aid in self.agent_ids
+            ], dtype=np.float32)
             for t in self.buffer
         ])).to(self.device)
 
@@ -375,10 +427,9 @@ class MAPPOAgent:
                     )
                     policy_comm = policy_comm * decision_confidence
                     if self.failure_gated_actor:
-                        policy_comm = policy_comm.clone()
-                        policy_comm[..., :1] = (
-                            1.0 - obs_masks
-                        ).amax(dim=-1, keepdim=True)
+                        policy_comm = self._inject_failure_context(
+                            policy_comm, obs_masks, failure_ages
+                        )
                     global_state = torch.cat(
                         [reconstructed, policy_comm], dim=-1
                     ).reshape(T, -1)
@@ -441,10 +492,9 @@ class MAPPOAgent:
                 )
                 student_local_comm = zero_comm
                 if self.failure_gated_actor:
-                    student_local_comm = zero_comm.clone()
-                    student_local_comm[..., :1] = (
-                        1.0 - obs_masks
-                    ).amax(dim=-1, keepdim=True)
+                    student_local_comm = self._inject_failure_context(
+                        zero_comm, obs_masks, failure_ages
+                    )
                 with torch.no_grad():
                     if self.teacher_actor is not None:
                         teacher_dist = self.teacher_actor(

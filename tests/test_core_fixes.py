@@ -170,6 +170,27 @@ class TestMAPPOUpdate(unittest.TestCase):
         )
         self.assertTrue(torch.allclose(actor(clean_input).probs, expected))
 
+    def test_failure_age_context_is_causal_and_clean_safe(self):
+        import torch
+
+        agent = MAPPOAgent.__new__(MAPPOAgent)
+        agent.failure_gated_actor = True
+        agent.failure_age_conditioning = True
+        agent.failure_age_max = 20.0
+        features = torch.zeros(2, 4)
+        observation_masks = torch.tensor([
+            [1.0, 1.0, 1.0],
+            [0.0, 0.0, 1.0],
+        ])
+        context = agent._inject_failure_context(
+            features, observation_masks, np.array([7.0, 4.0])
+        )
+        self.assertEqual(float(context[0, 0]), 0.0)
+        self.assertEqual(float(context[0, 1]), 0.0)
+        self.assertEqual(float(context[1, 0]), 1.0)
+        self.assertGreater(float(context[1, 1]), 0.0)
+        self.assertLessEqual(float(context[1, 1]), 1.0)
+
     def test_multi_agent_ratio_update_is_finite(self):
         config = {
             "agent": {"hidden_dim": 16},

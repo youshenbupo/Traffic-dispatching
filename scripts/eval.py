@@ -79,9 +79,13 @@ def main():
                 aid: value.copy()
                 for aid, value in env.last_clean_observations.items()
             }
+            failure_age = dict(
+                getattr(env, "last_failure_age", {})
+            )
             actions, _, _ = _agent_act(
                 agent, obs, masks, adj, explore=False,
                 obs_mask=obs_mask, clean_obs=clean_obs,
+                failure_age=failure_age,
             )
             next_obs, rewards, terminated, truncated, info_step = env.step(actions)
             done = terminated or truncated

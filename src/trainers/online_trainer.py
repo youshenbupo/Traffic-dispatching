@@ -9,7 +9,8 @@ from src.utils.csv_logger import CSVLogger
 
 
 def _agent_act(
-    agent, obs, masks, adj, explore=True, obs_mask=None, clean_obs=None
+    agent, obs, masks, adj, explore=True, obs_mask=None, clean_obs=None,
+    failure_age=None,
 ):
     """Call agent.act and normalize return to (actions, log_probs, values)."""
     import inspect
@@ -21,6 +22,8 @@ def _agent_act(
         kwargs["obs_mask"] = obs_mask
     if "clean_obs" in sig.parameters:
         kwargs["clean_obs"] = clean_obs
+    if "failure_age" in sig.parameters:
+        kwargs["failure_age"] = failure_age
     result = agent.act(obs, masks, **kwargs)
     if isinstance(result, tuple):
         actions, log_probs, values = result
@@ -68,12 +71,16 @@ class OnlineTrainer:
                     aid: value.copy()
                     for aid, value in self.env.last_observation_masks.items()
                 }
+                failure_age = dict(
+                    getattr(self.env, "last_failure_age", {})
+                )
                 adj = self.env.get_adjacency(
                     mode=self.graph_type, k=self.neighbor_k
                 )
                 actions, log_probs, values = _agent_act(
                     self.agent, obs, masks, adj, explore=True,
                     obs_mask=obs_mask, clean_obs=clean_obs,
+                    failure_age=failure_age,
                 )
 
                 if hasattr(self.agent, "store_transition") and log_probs is not None:
@@ -96,6 +103,8 @@ class OnlineTrainer:
                         transition["clean_obs"] = clean_obs
                     if "obs_mask" in parameters:
                         transition["obs_mask"] = obs_mask
+                    if "failure_age" in parameters:
+                        transition["failure_age"] = failure_age
                     self.agent.store_transition(**transition)
 
                 next_obs, rewards, terminated, truncated, info_step = self.env.step(actions)
@@ -179,9 +188,13 @@ class OnlineTrainer:
                     aid: value.copy()
                     for aid, value in self.env.last_clean_observations.items()
                 }
+                failure_age = dict(
+                    getattr(self.env, "last_failure_age", {})
+                )
                 actions, _, _ = _agent_act(
                     self.agent, obs, masks, adj, explore=False,
                     obs_mask=obs_mask, clean_obs=clean_obs,
+                    failure_age=failure_age,
                 )
                 next_obs, rewards, terminated, truncated, info_step = self.env.step(actions)
                 done = terminated or truncated

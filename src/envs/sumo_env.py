@@ -87,6 +87,8 @@ class SUMOMultiAgentEnv:
         self.last_observation_quality: Dict[str, float] = {}
         self.last_clean_observations: Dict[str, np.ndarray] = {}
         self.last_observation_masks: Dict[str, np.ndarray] = {}
+        self.failure_age: Dict[str, int] = {}
+        self.last_failure_age: Dict[str, float] = {}
         self._parse_perturbations()
         self.demand_spike_seed_offset = 0
 
@@ -281,6 +283,8 @@ class SUMOMultiAgentEnv:
         self.burst_failure_state = {
             tl_id: False for tl_id in self.tls_ids
         }
+        self.failure_age = {tl_id: 0 for tl_id in self.tls_ids}
+        self.last_failure_age = {tl_id: 0.0 for tl_id in self.tls_ids}
         obs = self._get_observations()
         info = {"num_agents": self.num_agents, "tls_ids": self.tls_ids}
         return obs, info
@@ -396,6 +400,7 @@ class SUMOMultiAgentEnv:
         self.last_observation_quality = {}
         self.last_clean_observations = {}
         self.last_observation_masks = {}
+        self.last_failure_age = {}
         correlated_failures = set()
         if (
             self.correlated_failure_prob > 0
@@ -510,6 +515,16 @@ class SUMOMultiAgentEnv:
                 feat[:n_lane_features] = 0.0
                 observation_mask[:n_lane_features] = 0.0
                 quality = 0.0
+
+            # Failure age is causal metadata: the number of consecutive
+            # control steps for which at least one sensor feature was absent.
+            # It lets a policy distinguish a fresh loss from a stale outage.
+            has_missing_sensor = bool(
+                np.any(observation_mask[:n_lane_features] == 0.0)
+            )
+            age = self.failure_age.get(tl_id, 0) + 1 if has_missing_sensor else 0
+            self.failure_age[tl_id] = age
+            self.last_failure_age[tl_id] = float(age)
 
             # Last-observation carry-forward is a causal temporal baseline:
             # it uses only measurements seen before the current failure and
