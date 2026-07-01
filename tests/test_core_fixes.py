@@ -13,6 +13,7 @@ from src.envs.sumo_env import SUMOMultiAgentEnv
 from src.networks.base import (
     AnchoredResidualActor,
     FailureGatedAnchoredActor,
+    FailureContextAnchoredActor,
     ResidualCommActor,
 )
 from src.networks.comm import ReliabilityAwareCommLayer
@@ -190,6 +191,36 @@ class TestMAPPOUpdate(unittest.TestCase):
         self.assertEqual(float(context[1, 0]), 1.0)
         self.assertGreater(float(context[1, 1]), 0.0)
         self.assertLessEqual(float(context[1, 1]), 1.0)
+
+    def test_failure_context_actor_uses_age_but_preserves_clean_anchor(self):
+        import torch
+
+        actor = FailureContextAnchoredActor(3, 4, 2, hidden_dim=8)
+        with torch.no_grad():
+            first = actor.adapter.net[0]
+            second = actor.adapter.net[2]
+            final = actor.adapter.net[-1]
+            first.weight.zero_()
+            first.bias.zero_()
+            first.weight[0, 4] = 1.0  # second auxiliary channel: age
+            second.weight.zero_()
+            second.bias.zero_()
+            second.weight[0, 0] = 1.0
+            final.weight.zero_()
+            final.bias.zero_()
+            final.weight[0, 0] = 1.0
+        clean = torch.zeros(1, 7)
+        failed_fresh = torch.zeros(1, 7)
+        failed_old = torch.zeros(1, 7)
+        failed_fresh[:, 3] = 1.0
+        failed_fresh[:, 4] = 0.1
+        failed_old[:, 3] = 1.0
+        failed_old[:, 4] = 0.9
+        anchor = torch.softmax(actor.base_net(clean[:, :3]), dim=-1)
+        self.assertTrue(torch.allclose(actor(clean).probs, anchor))
+        self.assertFalse(torch.allclose(
+            actor(failed_fresh).probs, actor(failed_old).probs
+        ))
 
     def test_multi_agent_ratio_update_is_finite(self):
         config = {

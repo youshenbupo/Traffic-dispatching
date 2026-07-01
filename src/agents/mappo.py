@@ -8,6 +8,7 @@ from typing import Dict, List
 
 from src.networks.base import (
     AnchoredResidualActor,
+    FailureContextAnchoredActor,
     FailureGatedAnchoredActor,
     MLPActor,
     MLPCritic,
@@ -109,7 +110,11 @@ class MAPPOAgent:
             # Actor receives comm-enhanced features only when targeting 'both'
             if self.comm_type == "racc":
                 if self.failure_gated_actor:
-                    actor_class = FailureGatedAnchoredActor
+                    actor_class = (
+                        FailureContextAnchoredActor
+                        if self.failure_age_conditioning
+                        else FailureGatedAnchoredActor
+                    )
                 elif graph_cfg.get("anchored_local_actor", False):
                     actor_class = AnchoredResidualActor
                 else:
