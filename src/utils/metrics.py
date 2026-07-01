@@ -22,6 +22,9 @@ class MetricsTracker:
         self.reconstruction_errors = []
         self.reconstruction_confidences = []
         self.decision_confidences = []
+        self.active_vehicle_counts = []
+        self.departed_vehicle_counts = []
+        self.step_durations = []
 
     def record_step(self, info: Dict[str, Any]):
         self.step_data.append(info)
@@ -45,6 +48,11 @@ class MetricsTracker:
             self.reconstruction_confidences.append(info["reconstruction_confidence"])
         if "decision_confidence" in info:
             self.decision_confidences.append(info["decision_confidence"])
+        if "active_vehicles" in info:
+            self.active_vehicle_counts.append(info["active_vehicles"])
+            self.step_durations.append(info.get("step_duration", 1.0))
+        if "departed_vehicles" in info:
+            self.departed_vehicle_counts.append(info["departed_vehicles"])
 
     def finalize(self, arrived_vehicles: List[Dict[str, Any]]):
         """Finalize episode metrics using arrived vehicle data."""
@@ -62,6 +70,20 @@ class MetricsTracker:
             "episode_reward": float(np.sum(self.rewards)),
             "episode_length": len(self.step_data),
         }
+        if self.active_vehicle_counts:
+            total_time_spent = float(np.sum(
+                np.asarray(self.active_vehicle_counts)
+                * np.asarray(self.step_durations)
+            ))
+            departed = float(max(self.departed_vehicle_counts, default=0.0))
+            result["total_time_spent"] = total_time_spent
+            result["departed_vehicles"] = departed
+            result["time_spent_per_departed_vehicle"] = (
+                total_time_spent / max(departed, 1.0)
+            )
+            result["completion_rate"] = (
+                result["throughput"] / max(departed, 1.0)
+            )
         if self.communication_rates:
             result["communication_rate"] = float(np.mean(self.communication_rates))
         if self.mean_reliabilities:
@@ -98,6 +120,12 @@ class MetricsTracker:
             # Count completed trips, not lane occupancy. The environment
             # accumulates arrivals across all internal SUMO steps.
             "throughput": float(env.last_step_arrived_count),
+            "active_vehicles": float(len(env.vehicle_subscriptions)),
+            "departed_vehicles": float(
+                len(env.arrived_vehicle_info)
+                + len(env.vehicle_subscriptions)
+            ),
+            "step_duration": float(env.delta_time),
             "observation_quality": float(np.mean(
                 list(env.last_observation_quality.values())
             )) if env.last_observation_quality else 1.0,

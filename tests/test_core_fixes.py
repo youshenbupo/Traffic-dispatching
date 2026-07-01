@@ -82,6 +82,25 @@ class TestMetrics(unittest.TestCase):
         self.assertEqual(result["average_travel_time"], 15.0)
         self.assertEqual(result["average_waiting_time"], 4.0)
 
+    def test_time_spent_metric_includes_unfinished_vehicles(self):
+        tracker = MetricsTracker()
+        tracker.record_step({
+            "throughput": 1.0,
+            "active_vehicles": 3.0,
+            "departed_vehicles": 4.0,
+            "step_duration": 5.0,
+        })
+        tracker.record_step({
+            "throughput": 1.0,
+            "active_vehicles": 2.0,
+            "departed_vehicles": 4.0,
+            "step_duration": 5.0,
+        })
+        result = tracker.aggregate()
+        self.assertEqual(result["total_time_spent"], 25.0)
+        self.assertEqual(result["time_spent_per_departed_vehicle"], 6.25)
+        self.assertEqual(result["completion_rate"], 0.5)
+
 
 class TestConfig(unittest.TestCase):
     def test_recursive_base_config(self):
