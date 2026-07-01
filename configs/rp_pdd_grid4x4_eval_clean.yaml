@@ -1,0 +1,6 @@
+_base_: "rp_pdd_grid4x4.yaml"
+experiment_name: "rp_pdd_grid4x4_eval_clean"
+
+robustness:
+  enabled: false
+  perturbations: []

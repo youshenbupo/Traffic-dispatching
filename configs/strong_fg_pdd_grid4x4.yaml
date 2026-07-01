@@ -1,0 +1,7 @@
+_base_: "fg_pdd_grid4x4.yaml"
+experiment_name: "strong_fg_pdd_grid4x4"
+
+dynamic_graph:
+  decision_distill_coef: 1.0
+  response_preservation_coef: 0.0
+  hard_response_coef: 0.0

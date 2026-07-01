@@ -10,7 +10,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.agents.mappo import MAPPOAgent
 from src.envs.sumo_env import SUMOMultiAgentEnv
-from src.networks.base import ResidualCommActor
+from src.networks.base import (
+    AnchoredResidualActor,
+    FailureGatedAnchoredActor,
+    ResidualCommActor,
+)
 from src.networks.comm import ReliabilityAwareCommLayer
 from src.utils.metrics import MetricsTracker
 from src.utils.config import load_config
@@ -136,6 +140,35 @@ class TestMAPPOUpdate(unittest.TestCase):
         fallback = actor(torch.cat([local, torch.zeros(1, 4)], dim=-1)).probs
         local_only = torch.softmax(actor.local_net(local), dim=-1)
         self.assertTrue(torch.allclose(fallback, local_only))
+
+    def test_anchored_actor_starts_at_frozen_teacher(self):
+        import torch
+
+        actor = AnchoredResidualActor(3, 4, 2, hidden_dim=8)
+        observation = torch.randn(5, 7)
+        expected = torch.softmax(
+            actor.base_net(observation[:, :3]), dim=-1
+        )
+        actual = actor(observation).probs
+        self.assertTrue(torch.allclose(actual, expected))
+        actor.freeze_anchor()
+        self.assertTrue(
+            all(not parameter.requires_grad for parameter in actor.base_net.parameters())
+        )
+
+    def test_failure_gate_preserves_clean_teacher(self):
+        import torch
+
+        actor = FailureGatedAnchoredActor(3, 4, 2, hidden_dim=8)
+        with torch.no_grad():
+            actor.adapter.net[-1].weight.fill_(1.0)
+            actor.adapter.net[-1].bias.fill_(1.0)
+        clean_input = torch.randn(5, 7)
+        clean_input[:, 3:] = 0.0
+        expected = torch.softmax(
+            actor.base_net(clean_input[:, :3]), dim=-1
+        )
+        self.assertTrue(torch.allclose(actor(clean_input).probs, expected))
 
     def test_multi_agent_ratio_update_is_finite(self):
         config = {

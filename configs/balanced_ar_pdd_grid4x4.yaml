@@ -1,0 +1,6 @@
+_base_: "ar_pdd_grid4x4.yaml"
+experiment_name: "balanced_ar_pdd_grid4x4"
+
+dynamic_graph:
+  decision_teacher_path: "logs/mappo_grid4x4_robust_continue_s{seed}/final_model"
+  hard_response_coef: 0.05

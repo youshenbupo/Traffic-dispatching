@@ -1,0 +1,5 @@
+_base_: "ar_pdd_grid4x4.yaml"
+experiment_name: "ar_pdd_grid4x4_coef002"
+
+dynamic_graph:
+  decision_distill_coef: 0.02

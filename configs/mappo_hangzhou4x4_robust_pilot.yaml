@@ -1,0 +1,20 @@
+_base_: "mappo_hangzhou4x4.yaml"
+experiment_name: "mappo_hangzhou4x4_robust_pilot"
+
+env:
+  queue_obs_scale: 10.0
+  wait_obs_scale: 100.0
+  flow_obs_scale: 10.0
+  reward_scale: 0.001
+
+training:
+  num_episodes: 10
+  eval_interval: 5
+  num_eval_episodes: 2
+  save_interval: 10
+
+robustness:
+  enabled: true
+  perturbations:
+    - type: "agent_observation_dropout"
+      prob: 0.2

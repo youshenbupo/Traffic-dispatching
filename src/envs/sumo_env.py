@@ -39,6 +39,16 @@ class SUMOMultiAgentEnv:
         self.reward_type = self.env_cfg.get("reward_type", "delay_queue")
         self.obs_type = self.env_cfg.get("observation_type", "queue_wait_phase_flow")
         self.demand_jitter = float(self.env_cfg.get("demand_jitter", 0.0))
+        self.queue_obs_scale = float(
+            self.env_cfg.get("queue_obs_scale", 1.0)
+        )
+        self.wait_obs_scale = float(
+            self.env_cfg.get("wait_obs_scale", 1.0)
+        )
+        self.flow_obs_scale = float(
+            self.env_cfg.get("flow_obs_scale", 1.0)
+        )
+        self.reward_scale = float(self.env_cfg.get("reward_scale", 1.0))
         self.sumo_seed = int(config.get("seed", 42))
 
         self.sumo = None
@@ -64,6 +74,11 @@ class SUMOMultiAgentEnv:
         self.sensor_noise_std = 0.0
         self.obs_dropout_prob = 0.0
         self.agent_obs_dropout_prob = 0.0
+        self.burst_failure_start_prob = 0.0
+        self.burst_failure_recovery_prob = 1.0
+        self.burst_failure_state: Dict[str, bool] = {}
+        self.correlated_failure_prob = 0.0
+        self.correlated_failure_fraction = 0.0
         self.temporal_observation_fallback = False
         self.cached_valid_observations: Dict[str, np.ndarray] = {}
         self.demand_scale = 1.0
@@ -83,6 +98,14 @@ class SUMOMultiAgentEnv:
                 self.obs_dropout_prob = p.get("prob", 0.0)
             elif p["type"] == "agent_observation_dropout":
                 self.agent_obs_dropout_prob = p.get("prob", 0.0)
+            elif p["type"] == "burst_agent_observation_dropout":
+                self.burst_failure_start_prob = p.get("start_prob", 0.05)
+                self.burst_failure_recovery_prob = p.get(
+                    "recovery_prob", 0.12
+                )
+            elif p["type"] == "correlated_agent_observation_dropout":
+                self.correlated_failure_prob = p.get("prob", 0.6)
+                self.correlated_failure_fraction = p.get("fraction", 0.5)
             elif p["type"] == "temporal_observation_fallback":
                 self.temporal_observation_fallback = p.get("enabled", True)
             elif p["type"] == "demand_spike":
@@ -255,6 +278,9 @@ class SUMOMultiAgentEnv:
         self.arrived_vehicle_info = []
         self.last_step_arrived_count = 0
         self.cached_valid_observations = {}
+        self.burst_failure_state = {
+            tl_id: False for tl_id in self.tls_ids
+        }
         obs = self._get_observations()
         info = {"num_agents": self.num_agents, "tls_ids": self.tls_ids}
         return obs, info
@@ -370,6 +396,34 @@ class SUMOMultiAgentEnv:
         self.last_observation_quality = {}
         self.last_clean_observations = {}
         self.last_observation_masks = {}
+        correlated_failures = set()
+        if (
+            self.correlated_failure_prob > 0
+            and np.random.rand() < self.correlated_failure_prob
+            and self.tls_ids
+        ):
+            anchor = self.tls_ids[np.random.randint(len(self.tls_ids))]
+            anchor_position = self.sumo.junction.getPosition(anchor)
+            ordered = sorted(
+                self.tls_ids,
+                key=lambda candidate: (
+                    (
+                        self.sumo.junction.getPosition(candidate)[0]
+                        - anchor_position[0]
+                    ) ** 2
+                    + (
+                        self.sumo.junction.getPosition(candidate)[1]
+                        - anchor_position[1]
+                    ) ** 2
+                ),
+            )
+            count = max(
+                1,
+                int(round(
+                    len(ordered) * self.correlated_failure_fraction
+                )),
+            )
+            correlated_failures = set(ordered[:count])
         for tl_id in self.tls_ids:
             lanes = self.incoming_lanes[tl_id]
             queues = []
@@ -408,6 +462,20 @@ class SUMOMultiAgentEnv:
                 np.array(flows, dtype=np.float32),
                 phase_onehot,
             ])
+            feature_scale = np.concatenate([
+                np.full(
+                    len(queues), self.queue_obs_scale, dtype=np.float32
+                ),
+                np.full(
+                    len(waits), self.wait_obs_scale, dtype=np.float32
+                ),
+                np.full(
+                    len(flows), self.flow_obs_scale, dtype=np.float32
+                ),
+                np.ones_like(phase_onehot),
+            ])
+            clean_feat = clean_feat / np.maximum(feature_scale, 1e-6)
+            feat = feat / np.maximum(feature_scale, 1e-6)
 
             # Apply observation dropout on lane-based features only
             quality = 1.0
@@ -420,11 +488,28 @@ class SUMOMultiAgentEnv:
                 feat[:n_lane_features] *= mask.astype(np.float32)
                 observation_mask[:n_lane_features] *= mask.astype(np.float32)
                 quality *= float(mask.mean())
-            if self.agent_obs_dropout_prob > 0:
-                if np.random.rand() < self.agent_obs_dropout_prob:
-                    feat[:n_lane_features] = 0.0
-                    observation_mask[:n_lane_features] = 0.0
-                    quality = 0.0
+            burst_failed = self.burst_failure_state.get(tl_id, False)
+            if burst_failed:
+                burst_failed = not (
+                    np.random.rand() < self.burst_failure_recovery_prob
+                )
+            elif self.burst_failure_start_prob > 0:
+                burst_failed = (
+                    np.random.rand() < self.burst_failure_start_prob
+                )
+            self.burst_failure_state[tl_id] = burst_failed
+            agent_failed = (
+                (
+                    self.agent_obs_dropout_prob > 0
+                    and np.random.rand() < self.agent_obs_dropout_prob
+                )
+                or burst_failed
+                or tl_id in correlated_failures
+            )
+            if agent_failed:
+                feat[:n_lane_features] = 0.0
+                observation_mask[:n_lane_features] = 0.0
+                quality = 0.0
 
             # Last-observation carry-forward is a causal temporal baseline:
             # it uses only measurements seen before the current failure and
@@ -487,6 +572,7 @@ class SUMOMultiAgentEnv:
                 rewards[tl_id] = -(norm_delay + 2.0 * norm_queue) + norm_throughput
             else:
                 rewards[tl_id] = -norm_delay
+            rewards[tl_id] *= self.reward_scale
         return rewards
 
     def _get_step_info(self) -> Dict[str, Any]:

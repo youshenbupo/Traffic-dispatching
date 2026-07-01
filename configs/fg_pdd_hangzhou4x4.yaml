@@ -1,0 +1,36 @@
+_base_: "fg_pdd_grid4x4.yaml"
+experiment_name: "fg_pdd_hangzhou4x4"
+
+env:
+  scenario_dir: "data/datasets/libsignal/hangzhou_4x4_gudang_18041610_1h"
+  net_file: "hangzhou_4x4_gudang_18041610_1h.net.xml"
+  route_file: "hangzhou_4x4_gudang_18041610_1h.rou.xml"
+  config_file: "hangzhou_4x4_gudang_18041610_1h.sumocfg"
+  num_seconds: 1800
+  delta_time: 5
+  yellow_time: 3
+  min_green: 5
+  max_green: 60
+  demand_jitter: 0
+  queue_obs_scale: 10.0
+  wait_obs_scale: 100.0
+  flow_obs_scale: 10.0
+  reward_scale: 0.001
+
+network:
+  rows: 4
+  cols: 4
+  edge_length: 1000
+  num_lanes: 1
+  speed_limit: 13.89
+  tl_type: "static"
+
+training:
+  num_episodes: 10
+  batch_size: 256
+  eval_interval: 5
+  num_eval_episodes: 2
+  save_interval: 10
+
+dynamic_graph:
+  decision_teacher_path: "logs/mappo_hangzhou4x4_continue_s{seed}/final_model"

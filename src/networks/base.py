@@ -72,6 +72,56 @@ class ResidualCommActor(nn.Module):
         return torch.distributions.Categorical(logits=logits)
 
 
+class AnchoredResidualActor(nn.Module):
+    """Frozen teacher anchor plus a zero-initialized local correction."""
+
+    def __init__(
+        self,
+        obs_dim: int,
+        comm_dim: int,
+        action_dim: int,
+        hidden_dim: int = 128,
+    ):
+        super().__init__()
+        self.obs_dim = obs_dim
+        self.base_net = MLP(obs_dim, hidden_dim, action_dim, num_layers=2)
+        self.adapter = MLP(obs_dim, hidden_dim, action_dim, num_layers=2)
+        final_layer = self.adapter.net[-1]
+        nn.init.zeros_(final_layer.weight)
+        nn.init.zeros_(final_layer.bias)
+
+    def freeze_anchor(self):
+        for parameter in self.base_net.parameters():
+            parameter.requires_grad = False
+
+    def forward(
+        self, actor_input: torch.Tensor, mask: torch.Tensor = None
+    ) -> torch.distributions.Categorical:
+        local_obs = actor_input[..., :self.obs_dim]
+        logits = self.base_net(local_obs) + self.adapter(local_obs)
+        if mask is not None:
+            logits = logits.masked_fill(~mask.bool(), float("-inf"))
+        return torch.distributions.Categorical(logits=logits)
+
+
+class FailureGatedAnchoredActor(AnchoredResidualActor):
+    """Apply the residual only when the input marks a sensor failure."""
+
+    def forward(
+        self, actor_input: torch.Tensor, mask: torch.Tensor = None
+    ) -> torch.distributions.Categorical:
+        local_obs = actor_input[..., :self.obs_dim]
+        auxiliary = actor_input[..., self.obs_dim:]
+        failure_present = auxiliary[..., :1].clamp(0.0, 1.0)
+        logits = (
+            self.base_net(local_obs)
+            + self.adapter(local_obs) * failure_present
+        )
+        if mask is not None:
+            logits = logits.masked_fill(~mask.bool(), float("-inf"))
+        return torch.distributions.Categorical(logits=logits)
+
+
 class MLPCritic(nn.Module):
     """State-value critic."""
 

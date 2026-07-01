@@ -1,0 +1,8 @@
+_base_: "fg_pdd_grid4x4.yaml"
+experiment_name: "fg_pdd_grid4x4_eval_p05"
+
+robustness:
+  enabled: true
+  perturbations:
+    - type: "agent_observation_dropout"
+      prob: 0.5

@@ -6,7 +6,13 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, List
 
-from src.networks.base import MLPActor, MLPCritic, ResidualCommActor
+from src.networks.base import (
+    AnchoredResidualActor,
+    FailureGatedAnchoredActor,
+    MLPActor,
+    MLPCritic,
+    ResidualCommActor,
+)
 from src.networks.gat import GATCommLayer
 from src.networks.comm import MeanPoolCommLayer, ReliabilityAwareCommLayer
 
@@ -62,6 +68,12 @@ class MAPPOAgent:
         self.decision_weight_max = graph_cfg.get(
             "decision_weight_max", 5.0
         )
+        self.response_preservation_coef = graph_cfg.get(
+            "response_preservation_coef", 0.0
+        )
+        self.hard_response_coef = graph_cfg.get(
+            "hard_response_coef", 0.0
+        )
         self.counterfactual_coef = graph_cfg.get("counterfactual_coef", 0.1)
         self.counterfactual_samples = graph_cfg.get("counterfactual_samples", 2)
         self.counterfactual_temperature = graph_cfg.get("counterfactual_temperature", 1.0)
@@ -70,6 +82,9 @@ class MAPPOAgent:
         self.update_count = 0
         self.last_comm_stats = {}
         self.teacher_actor = None
+        self.failure_gated_actor = graph_cfg.get(
+            "failure_gated_actor", False
+        )
 
         self.device = torch.device("cuda" if torch.cuda.is_available() and config.get("training", {}).get("use_gpu", True) else "cpu")
 
@@ -87,7 +102,13 @@ class MAPPOAgent:
                 self.comm = GATCommLayer(obs_dim, self.hidden_dim, heads=self.gat_heads).to(self.device)
             # Actor receives comm-enhanced features only when targeting 'both'
             if self.comm_type == "racc":
-                self.actor = ResidualCommActor(
+                if self.failure_gated_actor:
+                    actor_class = FailureGatedAnchoredActor
+                elif graph_cfg.get("anchored_local_actor", False):
+                    actor_class = AnchoredResidualActor
+                else:
+                    actor_class = ResidualCommActor
+                self.actor = actor_class(
                     obs_dim, self.hidden_dim, action_dim, self.hidden_dim
                 ).to(self.device)
                 self.critic = MLPCritic(
@@ -131,7 +152,11 @@ class MAPPOAgent:
                     for key, value in checkpoint["actor"].items()
                     if key.startswith("net.")
                 }
-                self.actor.local_net.load_state_dict(local_state)
+                if hasattr(self.actor, "base_net"):
+                    self.actor.base_net.load_state_dict(local_state)
+                    self.actor.freeze_anchor()
+                else:
+                    self.actor.local_net.load_state_dict(local_state)
 
         params = list(self.actor.parameters()) + list(self.critic.parameters())
         if self.comm is not None:
@@ -192,6 +217,11 @@ class MAPPOAgent:
                     policy_comm = (
                         comm_feats * confidence_scale * decision_confidence
                     )
+                    if self.failure_gated_actor:
+                        policy_comm = policy_comm.clone()
+                        policy_comm[..., :1] = (
+                            1.0 - obs_mask_tensor
+                        ).amax(dim=-1, keepdim=True)
                     missing = 1.0 - obs_mask_tensor
                     missing_count = missing.sum().clamp(min=1.0)
                     self.last_comm_stats["reconstruction_confidence"] = float(
@@ -344,6 +374,11 @@ class MAPPOAgent:
                         comm_out, obs
                     )
                     policy_comm = policy_comm * decision_confidence
+                    if self.failure_gated_actor:
+                        policy_comm = policy_comm.clone()
+                        policy_comm[..., :1] = (
+                            1.0 - obs_masks
+                        ).amax(dim=-1, keepdim=True)
                     global_state = torch.cat(
                         [reconstructed, policy_comm], dim=-1
                     ).reshape(T, -1)
@@ -384,6 +419,8 @@ class MAPPOAgent:
             decision_gate_loss = torch.zeros((), device=self.device)
             decision_gain = torch.zeros((), device=self.device)
             decision_criticality = torch.zeros((), device=self.device)
+            response_preservation_loss = torch.zeros((), device=self.device)
+            hard_response_loss = torch.zeros((), device=self.device)
             counterfactual_loss = torch.zeros((), device=self.device)
             if self.comm is not None and self.comm_type == "racc" and comm_details is not None:
                 candidates = comm_details["candidate_mask"].sum().clamp(min=1.0)
@@ -402,6 +439,12 @@ class MAPPOAgent:
                 zero_comm = torch.zeros(
                     T, N, self.hidden_dim, device=self.device
                 )
+                student_local_comm = zero_comm
+                if self.failure_gated_actor:
+                    student_local_comm = zero_comm.clone()
+                    student_local_comm[..., :1] = (
+                        1.0 - obs_masks
+                    ).amax(dim=-1, keepdim=True)
                 with torch.no_grad():
                     if self.teacher_actor is not None:
                         teacher_dist = self.teacher_actor(
@@ -419,16 +462,49 @@ class MAPPOAgent:
                         )
                         corrupted_teacher_dist = None
                     fallback_dist = self.actor(
-                        torch.cat([obs, zero_comm], dim=-1).reshape(
+                        torch.cat([obs, student_local_comm], dim=-1).reshape(
                             T * N, -1
                         ),
                         masks_flat,
                     )
                 teacher_probs = teacher_dist.probs.detach().clamp(min=1e-8)
                 teacher_log = teacher_probs.log()
+                if self.teacher_actor is not None:
+                    clean_student_dist = self.actor(
+                        torch.cat([clean_obs, zero_comm], dim=-1).reshape(
+                            T * N, -1
+                        ),
+                        masks_flat,
+                    )
+                    clean_student_log = (
+                        clean_student_dist.probs.clamp(min=1e-8).log()
+                    )
+                    response_preservation_loss = (
+                        teacher_probs
+                        * (teacher_log - clean_student_log)
+                    ).sum(dim=-1).mean()
+                    teacher_top2 = teacher_probs.topk(
+                        k=min(2, teacher_probs.shape[-1]), dim=-1
+                    ).values
+                    if teacher_top2.shape[-1] == 1:
+                        teacher_margin = teacher_top2[..., 0]
+                    else:
+                        teacher_margin = (
+                            teacher_top2[..., 0] - teacher_top2[..., 1]
+                        )
+                    teacher_action = teacher_probs.argmax(dim=-1)
+                    hard_nll = -clean_student_log.gather(
+                        dim=-1, index=teacher_action.unsqueeze(-1)
+                    ).squeeze(-1)
+                    hard_weight = 0.1 + teacher_margin
+                    hard_response_loss = (
+                        hard_nll * hard_weight
+                    ).sum() / hard_weight.sum().clamp(min=1.0)
                 if self.decision_distill_mode == "local":
                     student_dist = self.actor(
-                        torch.cat([obs, zero_comm], dim=-1).reshape(
+                        torch.cat(
+                            [obs, student_local_comm], dim=-1
+                        ).reshape(
                             T * N, -1
                         ),
                         masks_flat,
@@ -591,6 +667,9 @@ class MAPPOAgent:
                     + self.confidence_coef * confidence_loss
                     + self.decision_distill_coef * decision_distill_loss
                     + self.decision_gate_coef * decision_gate_loss
+                    + self.response_preservation_coef
+                    * response_preservation_loss
+                    + self.hard_response_coef * hard_response_loss
                     + self.counterfactual_coef * counterfactual_loss
                 )
 
@@ -613,6 +692,12 @@ class MAPPOAgent:
                 "decision_gain": float(decision_gain.detach().item()),
                 "decision_criticality": float(
                     decision_criticality.detach().item()
+                ),
+                "response_preservation_loss": float(
+                    response_preservation_loss.detach().item()
+                ),
+                "hard_response_loss": float(
+                    hard_response_loss.detach().item()
                 ),
                 "counterfactual_loss": float(counterfactual_loss.detach().item()),
             })

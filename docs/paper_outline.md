@@ -1,11 +1,11 @@
-# Paper plan: Privileged Decision Distillation for Robust Multi-Agent TSC
+# Paper plan: Failure-Gated Privileged Decision Distillation for Robust Multi-Agent TSC
 
 ## Working title
 
-**Learning to Act Through Sensor Failures: Privileged Decision Distillation
+**Learning to Act Through Sensor Failures: Failure-Gated Privileged Decision Distillation
 for Robust Multi-Agent Traffic Signal Control**
 
-Short method name: **DC-PDD** (Decision-Critical Privileged Decision
+Short method name: **FG-PDD** (Failure-Gated Privileged Decision
 Distillation).
 
 ## Central claim
@@ -13,9 +13,10 @@ Distillation).
 Robust traffic-signal policies should recover the *decision* made under clean
 traffic observations instead of reconstructing every missing sensor value.
 During training, a frozen clean-observation teacher supplies action-level
-privileged supervision. During deployment, every intersection acts from its
-corrupted local observation without privileged information and, in the core
-method, without communication.
+privileged supervision. A failure-gated residual adapter is exactly zero under
+nominal sensing and activates only when observations are missing. During
+deployment, every intersection acts locally without privileged information or
+communication.
 
 This claim is narrower and better supported than claiming that neighbor
 communication is generally beneficial.
@@ -49,8 +50,11 @@ c_i = D_{KL}\left[
 \right].
 \]
 
-The student \(\pi_\theta(a_i\mid\tilde{o}_i,m_i)\) minimizes the usual MAPPO
-loss plus a criticality-weighted decision-distillation objective:
+The deployed logits combine a frozen local teacher anchor and a learned
+failure adapter,
+\(\ell_i=\ell_T(\tilde{o}_i)+z_i r_\theta(\tilde{o}_i)\). The adapter minimizes
+the usual MAPPO loss plus a criticality-weighted decision-distillation
+objective:
 
 \[
 \mathcal{L}_{PDD}
@@ -66,7 +70,8 @@ D_{KL}\left[
 
 where \(z_i=1\) when at least one observation feature is unavailable. The
 weight \(w_i\) is a clipped normalized function of \(c_i\), with a small floor
-for coverage. The teacher is never used at deployment.
+for coverage. The frozen local teacher anchor remains part of the deployed
+policy; clean privileged observations and criticality computation are removed.
 
 The optional communication extension estimates whether a neighbor message
 reduces teacher-policy divergence. It must be reported separately from the
@@ -74,17 +79,16 @@ communication-free core and must beat the same-weight no-message ablation.
 
 ## Candidate contributions
 
-1. A decision-critical privileged distillation objective that allocates
+1. A failure-gated residual architecture that guarantees exact nominal-policy
+   preservation while reserving adaptation capacity for sensor failures.
+2. A decision-critical privileged distillation objective that allocates
    supervision according to the control impact of sensor failure rather than
    state-reconstruction error.
-2. A strict causal evaluation protocol that separates teacher initialization,
+3. A strict causal evaluation protocol that separates teacher initialization,
    training-time privileged supervision, reconstruction, and online
    communication.
-3. A systematic study of transient, burst, and correlated sensor failures
+4. A systematic study of IID, burst, and correlated sensor failures
    across synthetic and real traffic networks.
-4. An empirical characterization of when communication improves decisions
-   beyond a robust local fallback. This remains a secondary contribution until
-   the effect is reproducible.
 
 ## Mandatory ablations
 
@@ -117,26 +121,18 @@ the same-weight communication intervention.
 
 ## Current evidence and claim boundary
 
-On grid4x4 with 30% whole-intersection dropout, three training seeds, and five
-paired evaluation seeds:
-
-| Method | Travel | Waiting | Queue | Throughput |
-|---|---:|---:|---:|---:|
-| Equal-budget continued robust MAPPO | 93.80 | 10.08 | 0.0226 | 237.07 |
-| Teacher initialization only | 90.16 | 8.27 | 0.0185 | 237.40 |
-| Uniform PDD | 90.59 | 8.16 | 0.0182 | 237.33 |
-| Decision-critical PDD | 91.97 | **7.42** | **0.0156** | 236.80 |
-
-Decision-critical weighting consistently improves all three congestion metrics
-over the equal-budget baseline and substantially reduces seed variance. It
-does not dominate initialization-only on travel time or throughput. This
-supports a congestion-focused contribution but still requires five-seed,
-failure-curve, and real-network validation. It does not support a strong
-communication claim.
+On grid4x4, using five training seeds, five paired evaluation seeds, and equal
+total interaction budgets, FG-PDD reduces waiting/queue by 8.6%/12.0% at 30%
+IID dropout, 20.1%/24.8% at 50% dropout, and 42.2%/49.7% under burst failures.
+Travel and throughput are maintained or improved except for negligible changes
+under 30% IID and regional failures. Policy probes confirm identical nominal
+actions and substantial adapter intervention after sensor loss. This supports
+a robustness and variance-reduction claim, but not yet cross-network
+generality or a communication claim.
 
 ## Go/no-go criteria
 
-Proceed with PDD-MAPPO as the main paper method only if:
+Proceed with FG-PDD as the main paper method only if:
 
 1. C beats both A and B on travel, waiting, and queue in at least four of five
    seeds;
@@ -144,7 +140,7 @@ Proceed with PDD-MAPPO as the main paper method only if:
    three failure severities;
 3. gains are not explained by extra optimization steps or teacher
    initialization;
-4. clean-condition performance does not materially regress.
+4. exact clean-condition preservation remains verified.
 
 Promote communication to a main contribution only if G beats F consistently
 and gives a useful performance-bandwidth frontier. Otherwise report it as a

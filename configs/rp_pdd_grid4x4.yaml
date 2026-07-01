@@ -1,0 +1,6 @@
+_base_: "spdd_mappo_grid4x4.yaml"
+experiment_name: "rp_pdd_grid4x4"
+
+dynamic_graph:
+  decision_distill_coef: 0.1
+  response_preservation_coef: 0.5

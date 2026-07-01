@@ -1,0 +1,7 @@
+_base_: "mappo_hangzhou4x4_robust_pilot.yaml"
+experiment_name: "test_hangzhou4x4_normalized"
+
+training:
+  num_episodes: 2
+  eval_interval: 2
+  save_interval: 2
