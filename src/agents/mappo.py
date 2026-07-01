@@ -50,6 +50,18 @@ class MAPPOAgent:
             "decision_temperature", 0.1
         )
         self.decision_margin = graph_cfg.get("decision_margin", 0.0)
+        self.decision_distill_mode = graph_cfg.get(
+            "decision_distill_mode", "soft_comm"
+        )
+        self.decision_weighting = graph_cfg.get(
+            "decision_weighting", "uniform"
+        )
+        self.decision_weight_floor = graph_cfg.get(
+            "decision_weight_floor", 0.1
+        )
+        self.decision_weight_max = graph_cfg.get(
+            "decision_weight_max", 5.0
+        )
         self.counterfactual_coef = graph_cfg.get("counterfactual_coef", 0.1)
         self.counterfactual_samples = graph_cfg.get("counterfactual_samples", 2)
         self.counterfactual_temperature = graph_cfg.get("counterfactual_temperature", 1.0)
@@ -371,6 +383,7 @@ class MAPPOAgent:
             decision_distill_loss = torch.zeros((), device=self.device)
             decision_gate_loss = torch.zeros((), device=self.device)
             decision_gain = torch.zeros((), device=self.device)
+            decision_criticality = torch.zeros((), device=self.device)
             counterfactual_loss = torch.zeros((), device=self.device)
             if self.comm is not None and self.comm_type == "racc" and comm_details is not None:
                 candidates = comm_details["candidate_mask"].sum().clamp(min=1.0)
@@ -394,6 +407,9 @@ class MAPPOAgent:
                         teacher_dist = self.teacher_actor(
                             clean_obs.reshape(T * N, -1), masks_flat
                         )
+                        corrupted_teacher_dist = self.teacher_actor(
+                            obs.reshape(T * N, -1), masks_flat
+                        )
                     else:
                         teacher_dist = self.actor(
                             torch.cat(
@@ -401,6 +417,7 @@ class MAPPOAgent:
                             ).reshape(T * N, -1),
                             masks_flat,
                         )
+                        corrupted_teacher_dist = None
                     fallback_dist = self.actor(
                         torch.cat([obs, zero_comm], dim=-1).reshape(
                             T * N, -1
@@ -409,27 +426,36 @@ class MAPPOAgent:
                     )
                 teacher_probs = teacher_dist.probs.detach().clamp(min=1e-8)
                 teacher_log = teacher_probs.log()
-                soft_comm = comm_details["soft_messages"]
-                soft_reconstructed, soft_recon_confidence = (
-                    self.comm.reconstruct_with_confidence(
-                        soft_comm, obs, obs_masks
+                if self.decision_distill_mode == "local":
+                    student_dist = self.actor(
+                        torch.cat([obs, zero_comm], dim=-1).reshape(
+                            T * N, -1
+                        ),
+                        masks_flat,
                     )
-                )
-                soft_decision_confidence = self.comm.decision_confidence(
-                    soft_comm, obs
-                )
-                soft_policy_comm = (
-                    soft_comm
-                    * soft_recon_confidence.mean(dim=-1, keepdim=True)
-                    * soft_decision_confidence
-                )
-                soft_dist = self.actor(
-                    torch.cat(
-                        [soft_reconstructed, soft_policy_comm], dim=-1
-                    ).reshape(T * N, -1),
-                    masks_flat,
-                )
-                full_log = soft_dist.probs.clamp(min=1e-8).log()
+                    soft_decision_confidence = None
+                else:
+                    soft_comm = comm_details["soft_messages"]
+                    soft_reconstructed, soft_recon_confidence = (
+                        self.comm.reconstruct_with_confidence(
+                            soft_comm, obs, obs_masks
+                        )
+                    )
+                    soft_decision_confidence = self.comm.decision_confidence(
+                        soft_comm, obs
+                    )
+                    soft_policy_comm = (
+                        soft_comm
+                        * soft_recon_confidence.mean(dim=-1, keepdim=True)
+                        * soft_decision_confidence
+                    )
+                    student_dist = self.actor(
+                        torch.cat(
+                            [soft_reconstructed, soft_policy_comm], dim=-1
+                        ).reshape(T * N, -1),
+                        masks_flat,
+                    )
+                full_log = student_dist.probs.clamp(min=1e-8).log()
                 fallback_log = fallback_dist.probs.detach().clamp(
                     min=1e-8
                 ).log()
@@ -441,9 +467,35 @@ class MAPPOAgent:
                 ).sum(dim=-1).reshape(T, N)
                 corrupted = (1.0 - obs_masks).amax(dim=-1)
                 corrupted_count = corrupted.sum().clamp(min=1.0)
+                distill_weight = corrupted
+                if (
+                    self.decision_weighting == "criticality"
+                    and corrupted_teacher_dist is not None
+                ):
+                    corrupted_teacher_log = (
+                        corrupted_teacher_dist.probs.detach()
+                        .clamp(min=1e-8)
+                        .log()
+                    )
+                    criticality = (
+                        teacher_probs
+                        * (teacher_log - corrupted_teacher_log)
+                    ).sum(dim=-1).reshape(T, N)
+                    criticality_mean = (
+                        criticality * corrupted
+                    ).sum() / corrupted_count
+                    normalized_criticality = (
+                        criticality
+                        / criticality_mean.clamp(min=1e-6)
+                    )
+                    distill_weight = corrupted * (
+                        self.decision_weight_floor
+                        + normalized_criticality
+                    ).clamp(max=self.decision_weight_max)
+                    decision_criticality = criticality_mean
                 decision_distill_loss = (
-                    full_kl * corrupted
-                ).sum() / corrupted_count
+                    full_kl * distill_weight
+                ).sum() / distill_weight.sum().clamp(min=1.0)
                 utility = fallback_kl.detach() - full_kl.detach()
                 decision_gain = (
                     utility * corrupted
@@ -452,33 +504,34 @@ class MAPPOAgent:
                     (utility - self.decision_margin)
                     / max(self.decision_temperature, 1e-6)
                 )
-                predicted_utility = soft_decision_confidence.squeeze(-1)
-                confidence_gate_loss = (
-                    F.binary_cross_entropy(
-                        predicted_utility.clamp(1e-6, 1 - 1e-6),
-                        utility_target,
-                        reduction="none",
-                    ) * corrupted
-                ).sum() / corrupted_count
-                incoming_gate = (
-                    (
-                        comm_details["gate_prob"]
-                        * comm_details["candidate_mask"]
-                    ).sum(dim=-1)
-                    / comm_details["candidate_mask"].sum(
-                        dim=-1
-                    ).clamp(min=1.0)
-                )
-                edge_gate_loss = (
-                    F.binary_cross_entropy(
-                        incoming_gate.clamp(1e-6, 1 - 1e-6),
-                        utility_target,
-                        reduction="none",
-                    ) * corrupted
-                ).sum() / corrupted_count
-                decision_gate_loss = 0.5 * (
-                    confidence_gate_loss + edge_gate_loss
-                )
+                if soft_decision_confidence is not None:
+                    predicted_utility = soft_decision_confidence.squeeze(-1)
+                    confidence_gate_loss = (
+                        F.binary_cross_entropy(
+                            predicted_utility.clamp(1e-6, 1 - 1e-6),
+                            utility_target,
+                            reduction="none",
+                        ) * corrupted
+                    ).sum() / corrupted_count
+                    incoming_gate = (
+                        (
+                            comm_details["gate_prob"]
+                            * comm_details["candidate_mask"]
+                        ).sum(dim=-1)
+                        / comm_details["candidate_mask"].sum(
+                            dim=-1
+                        ).clamp(min=1.0)
+                    )
+                    edge_gate_loss = (
+                        F.binary_cross_entropy(
+                            incoming_gate.clamp(1e-6, 1 - 1e-6),
+                            utility_target,
+                            reduction="none",
+                        ) * corrupted
+                    ).sum() / corrupted_count
+                    decision_gate_loss = 0.5 * (
+                        confidence_gate_loss + edge_gate_loss
+                    )
 
                 # Remove sampled senders and use the centralized critic's value
                 # change as a detached target for their average outgoing gate.
@@ -558,6 +611,9 @@ class MAPPOAgent:
                     decision_gate_loss.detach().item()
                 ),
                 "decision_gain": float(decision_gain.detach().item()),
+                "decision_criticality": float(
+                    decision_criticality.detach().item()
+                ),
                 "counterfactual_loss": float(counterfactual_loss.detach().item()),
             })
 

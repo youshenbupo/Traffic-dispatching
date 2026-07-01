@@ -67,6 +67,8 @@ class SUMOMultiAgentEnv:
         self.temporal_observation_fallback = False
         self.cached_valid_observations: Dict[str, np.ndarray] = {}
         self.demand_scale = 1.0
+        self.directional_demand_source = None
+        self.directional_demand_scale = 1.0
         self.last_observation_quality: Dict[str, float] = {}
         self.last_clean_observations: Dict[str, np.ndarray] = {}
         self.last_observation_masks: Dict[str, np.ndarray] = {}
@@ -85,6 +87,9 @@ class SUMOMultiAgentEnv:
                 self.temporal_observation_fallback = p.get("enabled", True)
             elif p["type"] == "demand_spike":
                 self.demand_scale = p.get("scale", 1.0)
+            elif p["type"] == "directional_demand_spike":
+                self.directional_demand_source = p.get("source", "left")
+                self.directional_demand_scale = p.get("scale", 2.0)
 
     def _create_demand_route_file(self, seed: int) -> Optional[str]:
         """Create a temporary route file with scaled departure times.
@@ -94,7 +99,11 @@ class SUMOMultiAgentEnv:
         For demand_scale > 1 we additionally duplicate a fraction of vehicles
         to better approximate a true demand increase.
         """
-        if self.demand_scale == 1.0 and self.demand_jitter <= 0:
+        if (
+            self.demand_scale == 1.0
+            and self.demand_jitter <= 0
+            and self.directional_demand_scale == 1.0
+        ):
             return None
         if not os.path.exists(self.route_file):
             return None
@@ -127,10 +136,41 @@ class SUMOMultiAgentEnv:
                     additions.append(v2)
             for v2 in additions:
                 root.append(v2)
+        if self.directional_demand_scale > 1.0:
+            directional_additions = []
+            extra_copies = int(self.directional_demand_scale - 1.0)
+            fractional_copy = self.directional_demand_scale - 1.0 - extra_copies
+            for v in vehicles:
+                route = v.find("route")
+                edges = route.get("edges", "").split() if route is not None else []
+                if not edges or not edges[0].startswith(
+                    self.directional_demand_source
+                ):
+                    continue
+                copies = extra_copies + int(rng.rand() < fractional_copy)
+                for copy_id in range(copies):
+                    v2 = copy.deepcopy(v)
+                    depart = float(v2.get("depart", 0.0)) + 0.05 * (
+                        copy_id + 1
+                    )
+                    v2.set(
+                        "id",
+                        (
+                            f"{v2.get('id')}_dir"
+                            f"{self.directional_demand_source}{copy_id}"
+                        ),
+                    )
+                    v2.set("depart", f"{depart:.2f}")
+                    directional_additions.append(v2)
+            for v2 in directional_additions:
+                root.append(v2)
         os.makedirs(self.cfg.get("log_dir", "./logs"), exist_ok=True)
         temp_path = os.path.join(
             self.cfg.get("log_dir", "./logs"),
-            f"temp_demand_{self.demand_scale:.2f}_seed{seed}.rou.xml",
+            (
+                f"temp_demand_{self.demand_scale:.2f}_seed{seed}"
+                f"_pid{os.getpid()}.rou.xml"
+            ),
         )
         tree.write(temp_path, encoding="UTF-8", xml_declaration=True)
         return temp_path

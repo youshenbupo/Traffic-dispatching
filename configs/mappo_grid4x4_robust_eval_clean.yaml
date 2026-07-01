@@ -1,0 +1,6 @@
+_base_: "mappo_grid4x4_robust_pilot.yaml"
+experiment_name: "mappo_grid4x4_robust_eval_clean"
+
+robustness:
+  enabled: false
+  perturbations: []

@@ -1,0 +1,5 @@
+_base_: "pdd_mappo_grid4x4.yaml"
+experiment_name: "pdd_mappo_grid4x4_no_init"
+
+dynamic_graph:
+  initialize_local_from_teacher: false

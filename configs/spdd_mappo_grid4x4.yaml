@@ -1,0 +1,7 @@
+_base_: "pdd_mappo_grid4x4.yaml"
+experiment_name: "spdd_mappo_grid4x4"
+
+dynamic_graph:
+  decision_weighting: "criticality"
+  decision_weight_floor: 0.1
+  decision_weight_max: 5.0

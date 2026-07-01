@@ -1,0 +1,9 @@
+_base_: "spdd_mappo_grid4x4.yaml"
+experiment_name: "spdd_mappo_grid4x4_eval_left2"
+
+robustness:
+  enabled: true
+  perturbations:
+    - type: "directional_demand_spike"
+      source: "left"
+      scale: 2.0

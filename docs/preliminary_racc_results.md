@@ -240,3 +240,30 @@ The promising contribution is therefore privileged decision distillation for
 robust TSC, not yet sparse communication. The next mandatory ablation must
 separate teacher initialization, fixed-teacher distillation, reconstruction,
 and communication during training.
+
+## Communication-free distillation ablations
+
+All results below were rerun after making temporary SUMO demand files unique
+per process. This removes a race in parallel evaluation where processes could
+write the same route XML simultaneously.
+
+Grid4x4, 30% whole-agent dropout, three training seeds, five common evaluation
+seeds, and equal student-training budget:
+
+| Method | Travel | Waiting | Queue | Throughput |
+|---|---:|---:|---:|---:|
+| Continued robust MAPPO | 93.80 ± 0.72 | 10.08 ± 0.68 | 0.0226 ± 0.0017 | 237.07 ± 0.50 |
+| Teacher initialization only | **90.16 ± 2.14** | 8.27 ± 1.07 | 0.0185 ± 0.0023 | **237.40 ± 1.06** |
+| Uniform PDD, no initialization | 91.91 ± 1.58 | 8.67 ± 1.50 | 0.0191 ± 0.0039 | 237.33 ± 0.31 |
+| Uniform PDD | 90.59 ± 1.18 | 8.16 ± 1.10 | 0.0182 ± 0.0029 | 237.33 ± 0.31 |
+| Decision-critical PDD | 91.97 ± 0.23 | **7.42 ± 0.12** | **0.0156 ± 0.0002** | 236.80 ± 0.35 |
+
+Uniform distillation alone is useful but does not dominate teacher
+initialization. Their combination improves waiting and queueing slightly over
+initialization alone. Decision-critical weighting yields a different operating
+point: compared with the equal-budget baseline it lowers travel time in every
+seed, waiting by 26.4%, and queueing by about 31%, while sharply reducing seed
+variance. It sacrifices some travel-time and throughput performance relative
+to the initialization-only policy. The paper must present this as a
+mobility-congestion tradeoff and test whether it persists over more seeds,
+failure severities, and real networks.

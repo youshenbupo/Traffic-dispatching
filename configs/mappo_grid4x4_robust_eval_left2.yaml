@@ -1,0 +1,9 @@
+_base_: "mappo_grid4x4_robust_pilot.yaml"
+experiment_name: "mappo_grid4x4_robust_eval_left2"
+
+robustness:
+  enabled: true
+  perturbations:
+    - type: "directional_demand_spike"
+      source: "left"
+      scale: 2.0

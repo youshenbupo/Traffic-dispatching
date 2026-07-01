@@ -1,0 +1,12 @@
+_base_: "racc_grid4x4_v10_frozen_teacher.yaml"
+experiment_name: "pdd_mappo_grid4x4"
+
+dynamic_graph:
+  decision_distill_mode: "local"
+  decision_distill_coef: 1.0
+  decision_gate_coef: 0.0
+  reconstruction_coef: 0.0
+  confidence_coef: 0.0
+  reliability_coef: 0.0
+  comm_cost_coef: 0.0
+  gate_threshold: 1.1

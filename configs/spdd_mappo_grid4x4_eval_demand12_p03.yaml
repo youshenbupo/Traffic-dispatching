@@ -1,0 +1,10 @@
+_base_: "spdd_mappo_grid4x4.yaml"
+experiment_name: "spdd_mappo_grid4x4_eval_demand12_p03"
+
+robustness:
+  enabled: true
+  perturbations:
+    - type: "demand_spike"
+      scale: 1.2
+    - type: "agent_observation_dropout"
+      prob: 0.3

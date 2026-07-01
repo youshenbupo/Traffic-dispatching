@@ -1,0 +1,5 @@
+_base_: "pdd_mappo_grid4x4.yaml"
+experiment_name: "pdd_mappo_grid4x4_init_only"
+
+dynamic_graph:
+  decision_distill_coef: 0.0
