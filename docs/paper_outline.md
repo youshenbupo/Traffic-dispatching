@@ -145,3 +145,14 @@ Proceed with FG-PDD as the main paper method only if:
 Promote communication to a main contribution only if G beats F consistently
 and gives a useful performance-bandwidth frontier. Otherwise report it as a
 negative finding or omit it from the principal method.
+
+## Active extension hypothesis (not yet a contribution)
+
+Binary failure gating cannot distinguish a newly missing observation from a
+long outage. Failure-age FG-PDD adds the log-scaled consecutive missing-step
+count to the gated residual while retaining an exactly zero residual under
+clean sensing. Its causal test compares failure-age conditioning against
+ordinary FG-PDD trained on the same burst-failure trajectories and budget.
+Promote this extension only if it improves waiting/queueing on burst failures
+without degrading IID failures, and the effect repeats in at least four of five
+training seeds.
