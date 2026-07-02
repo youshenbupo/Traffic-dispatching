@@ -1,0 +1,10 @@
+_base_: "mappo_cologne3_eval.yaml"
+experiment_name: "mappo_cologne3_temporal_eval"
+
+robustness:
+  enabled: true
+  perturbations:
+    - type: "agent_observation_dropout"
+      prob: 0.3
+    - type: "temporal_observation_fallback"
+      enabled: true

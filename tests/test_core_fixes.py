@@ -129,6 +129,23 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(perturbation["min_count"], 1)
         self.assertEqual(perturbation["max_count"], 2)
 
+    def test_cologne_temporal_eval_keeps_dropout_and_adds_fallback(self):
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "configs",
+            "mappo_cologne3_temporal_eval.yaml",
+        )
+        config = load_config(path)
+        perturbations = config["robustness"]["perturbations"]
+        self.assertEqual(
+            [item["type"] for item in perturbations],
+            [
+                "agent_observation_dropout",
+                "temporal_observation_fallback",
+            ],
+        )
+        self.assertEqual(perturbations[0]["prob"], 0.3)
+
 
 class TestEvaluationInputs(unittest.TestCase):
     def test_clean_oracle_replaces_observation_and_mask(self):
