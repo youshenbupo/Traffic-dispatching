@@ -271,6 +271,22 @@ class SUMOMultiAgentEnv:
                     outgoing.append(conn[0])
         return outgoing
 
+    def _get_tls_position(self, tl_id: str) -> Tuple[float, float]:
+        """Return a position even when a traffic-light ID is not a junction ID."""
+        try:
+            return tuple(self.sumo.junction.getPosition(tl_id))
+        except Exception:
+            endpoints = []
+            for lane in self.incoming_lanes.get(tl_id, []):
+                shape = self.sumo.lane.getShape(lane)
+                if shape:
+                    endpoints.append(shape[-1])
+            if not endpoints:
+                raise ValueError(
+                    f"Cannot infer position for traffic light {tl_id}"
+                )
+            return tuple(np.mean(np.asarray(endpoints), axis=0))
+
     def reset(self, seed: Optional[int] = None) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
         if seed is not None:
             random.seed(seed)
@@ -428,16 +444,16 @@ class SUMOMultiAgentEnv:
             and self.tls_ids
         ):
             anchor = self.tls_ids[np.random.randint(len(self.tls_ids))]
-            anchor_position = self.sumo.junction.getPosition(anchor)
+            anchor_position = self._get_tls_position(anchor)
             ordered = sorted(
                 self.tls_ids,
                 key=lambda candidate: (
                     (
-                        self.sumo.junction.getPosition(candidate)[0]
+                        self._get_tls_position(candidate)[0]
                         - anchor_position[0]
                     ) ** 2
                     + (
-                        self.sumo.junction.getPosition(candidate)[1]
+                        self._get_tls_position(candidate)[1]
                         - anchor_position[1]
                     ) ** 2
                 ),
@@ -709,7 +725,10 @@ class SUMOMultiAgentEnv:
         n = self.num_agents
         adj = np.zeros((n, n), dtype=np.float32)
         if mode == "static":
-            positions = {tl_id: self.sumo.junction.getPosition(tl_id) for tl_id in self.tls_ids}
+            positions = {
+                tl_id: self._get_tls_position(tl_id)
+                for tl_id in self.tls_ids
+            }
             for i, a in enumerate(self.tls_ids):
                 for j, b in enumerate(self.tls_ids):
                     if i == j:
