@@ -187,9 +187,8 @@ class OnlineTrainer:
                     best_metric = candidate
                     self.agent.save(os.path.join(self.log_dir, "best_model"))
                     self.logger.info(
-                        "Selected best checkpoint: %s=%.6f",
-                        self.model_selection_metric,
-                        candidate,
+                        "Selected best checkpoint: "
+                        f"{self.model_selection_metric}={candidate:.6f}"
                     )
 
             if ep % self.save_interval == 0:
