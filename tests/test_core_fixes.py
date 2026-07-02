@@ -20,7 +20,10 @@ from src.networks.comm import ReliabilityAwareCommLayer
 from src.utils.metrics import MetricsTracker
 from src.utils.config import load_config
 from scripts.eval import select_policy_observations
-from scripts.probe_dual_policy_risk import temporal_carry_forward
+from scripts.probe_dual_policy_risk import (
+    queue_shield_triggered,
+    temporal_carry_forward,
+)
 
 
 class _TrafficLightStub:
@@ -183,6 +186,11 @@ class TestEvaluationInputs(unittest.TestCase):
         np.testing.assert_array_equal(
             filled["A"], np.array([1.0, 3.0], dtype=np.float32)
         )
+
+    def test_queue_shield_requires_sustained_congestion(self):
+        self.assertFalse(queue_shield_triggered([1.0], 2, 0.5))
+        self.assertFalse(queue_shield_triggered([0.4, 0.6], 2, 0.5))
+        self.assertTrue(queue_shield_triggered([0.6, 0.6], 2, 0.5))
 
 
 class TestMAPPOUpdate(unittest.TestCase):

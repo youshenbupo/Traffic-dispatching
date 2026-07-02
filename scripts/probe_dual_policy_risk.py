@@ -31,6 +31,13 @@ def temporal_carry_forward(observations, observation_masks, cache):
     return filled
 
 
+def queue_shield_triggered(queue_history, window, threshold):
+    """Return true after sustained congestion exceeds the shield threshold."""
+    if len(queue_history) < window:
+        return False
+    return float(np.mean(queue_history[-window:])) > threshold
+
+
 def policy_actions(
     agent,
     observations,
@@ -61,9 +68,11 @@ def main():
     parser.add_argument("--seeds", required=True)
     parser.add_argument(
         "--control_source",
-        choices=("observed", "temporal"),
+        choices=("observed", "temporal", "queue_shield"),
         default="observed",
     )
+    parser.add_argument("--shield_window", type=int, default=60)
+    parser.add_argument("--shield_threshold", type=float, default=0.5)
     parser.add_argument("--gpus", default=None)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
@@ -90,6 +99,8 @@ def main():
         temporal_cache = {}
         tracker = MetricsTracker()
         trace = []
+        queue_history = []
+        shield_active = False
         done = False
         while not done:
             masks = env.get_legal_actions()
@@ -141,11 +152,19 @@ def main():
                 if observed_actions[aid] != temporal_actions[aid]
                 and np.asarray(masks[aid]).sum() > 1
             ]
-            actions = (
-                observed_actions
-                if args.control_source == "observed"
-                else temporal_actions
-            )
+            if args.control_source == "queue_shield":
+                shield_active = shield_active or queue_shield_triggered(
+                    queue_history,
+                    args.shield_window,
+                    args.shield_threshold,
+                )
+                actions = (
+                    temporal_actions if shield_active else observed_actions
+                )
+            elif args.control_source == "temporal":
+                actions = temporal_actions
+            else:
+                actions = observed_actions
             next_observations, rewards, terminated, truncated, _ = (
                 env.step(actions)
             )
@@ -154,6 +173,7 @@ def main():
                 "reward": sum(rewards.values()),
                 **step_metrics,
             })
+            queue_history.append(step_metrics["queue_length"])
             trace.append({
                 "step": len(trace),
                 "failed_agents": failed,
@@ -161,6 +181,7 @@ def main():
                 "queue_length": step_metrics["queue_length"],
                 "active_vehicles": step_metrics["active_vehicles"],
                 "throughput": step_metrics["throughput"],
+                "shield_active": shield_active,
             })
             observations = next_observations
             done = terminated or truncated
