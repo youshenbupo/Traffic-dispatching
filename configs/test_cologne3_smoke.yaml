@@ -5,6 +5,6 @@ env:
   num_seconds: 600
 
 training:
-  num_episodes: 2
+  num_episodes: 3
   eval_interval: 100
-  save_interval: 2
+  save_interval: 3

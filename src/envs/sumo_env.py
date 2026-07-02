@@ -66,6 +66,7 @@ class SUMOMultiAgentEnv:
         self.num_agents: int = 0
         self.max_incoming_lanes: int = 0
         self.max_action_dim: int = 0
+        self.tls_positions: Dict[str, Tuple[float, float]] = {}
         self.phases: Dict[str, List[str]] = {}
         self.incoming_lanes: Dict[str, List[str]] = {}
         self.outgoing_lanes: Dict[str, List[str]] = {}
@@ -260,6 +261,10 @@ class SUMOMultiAgentEnv:
         self.max_action_dim = max(
             (len(v) for v in self.phases.values()), default=0
         )
+        self.tls_positions = {
+            tl_id: self._get_tls_position_uncached(tl_id)
+            for tl_id in self.tls_ids
+        }
 
     def _get_outgoing_lanes(self, tl_id: str) -> List[str]:
         """Infer outgoing lanes from incoming lanes via connections."""
@@ -273,19 +278,26 @@ class SUMOMultiAgentEnv:
 
     def _get_tls_position(self, tl_id: str) -> Tuple[float, float]:
         """Return a position even when a traffic-light ID is not a junction ID."""
-        try:
+        if tl_id in self.tls_positions:
+            return self.tls_positions[tl_id]
+        return self._get_tls_position_uncached(tl_id)
+
+    def _get_tls_position_uncached(
+        self, tl_id: str
+    ) -> Tuple[float, float]:
+        junction_ids = set(self.sumo.junction.getIDList())
+        if tl_id in junction_ids:
             return tuple(self.sumo.junction.getPosition(tl_id))
-        except Exception:
-            endpoints = []
-            for lane in self.incoming_lanes.get(tl_id, []):
-                shape = self.sumo.lane.getShape(lane)
-                if shape:
-                    endpoints.append(shape[-1])
-            if not endpoints:
-                raise ValueError(
-                    f"Cannot infer position for traffic light {tl_id}"
-                )
-            return tuple(np.mean(np.asarray(endpoints), axis=0))
+        endpoints = []
+        for lane in self.incoming_lanes.get(tl_id, []):
+            shape = self.sumo.lane.getShape(lane)
+            if shape:
+                endpoints.append(shape[-1])
+        if not endpoints:
+            raise ValueError(
+                f"Cannot infer position for traffic light {tl_id}"
+            )
+        return tuple(np.mean(np.asarray(endpoints), axis=0))
 
     def reset(self, seed: Optional[int] = None) -> Tuple[Dict[str, np.ndarray], Dict[str, Any]]:
         if seed is not None:
