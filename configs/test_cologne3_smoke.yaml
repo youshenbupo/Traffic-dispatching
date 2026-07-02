@@ -1,0 +1,10 @@
+_base_: "mappo_cologne3.yaml"
+experiment_name: "test_cologne3_smoke"
+
+env:
+  num_seconds: 600
+
+training:
+  num_episodes: 2
+  eval_interval: 100
+  save_interval: 2

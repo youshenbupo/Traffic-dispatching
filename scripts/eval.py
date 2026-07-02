@@ -25,7 +25,11 @@ def make_agent(env, config):
     agent_name = config.get("agent", {}).get("name", "mappo").lower()
     obs_sample = env._get_observations()
     obs_dim = obs_sample[env.agent_ids[0]].shape[0]
-    action_dim = len(env.phases[env.agent_ids[0]])
+    action_dim = (
+        env.max_action_dim
+        if env.pad_heterogeneous_spaces
+        else len(env.phases[env.agent_ids[0]])
+    )
 
     if agent_name == "dqn":
         return DQNAgent(obs_dim, action_dim, env.agent_ids, config)

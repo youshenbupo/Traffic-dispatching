@@ -49,7 +49,11 @@ class SUMOMultiAgentEnv:
             self.env_cfg.get("flow_obs_scale", 1.0)
         )
         self.reward_scale = float(self.env_cfg.get("reward_scale", 1.0))
+        self.pad_heterogeneous_spaces = bool(
+            self.env_cfg.get("pad_heterogeneous_spaces", False)
+        )
         self.sumo_seed = int(config.get("seed", 42))
+        self.episode_start_time = 0.0
 
         self.sumo = None
         self.vehicle_subscriptions = {}
@@ -60,6 +64,8 @@ class SUMOMultiAgentEnv:
         self.tls_ids: List[str] = []
         self.agent_ids: List[str] = []
         self.num_agents: int = 0
+        self.max_incoming_lanes: int = 0
+        self.max_action_dim: int = 0
         self.phases: Dict[str, List[str]] = {}
         self.incoming_lanes: Dict[str, List[str]] = {}
         self.outgoing_lanes: Dict[str, List[str]] = {}
@@ -248,6 +254,12 @@ class SUMOMultiAgentEnv:
             self.pending_phase[tl_id] = None
             self.transition_remaining[tl_id] = 0
             self.sumo.trafficlight.setRedYellowGreenState(tl_id, green_phases[0])
+        self.max_incoming_lanes = max(
+            (len(v) for v in self.incoming_lanes.values()), default=0
+        )
+        self.max_action_dim = max(
+            (len(v) for v in self.phases.values()), default=0
+        )
 
     def _get_outgoing_lanes(self, tl_id: str) -> List[str]:
         """Infer outgoing lanes from incoming lanes via connections."""
@@ -275,6 +287,7 @@ class SUMOMultiAgentEnv:
             seed if seed is not None else self.demand_spike_seed_offset
         )
         self._start_sumo()
+        self.episode_start_time = float(self.sumo.simulation.getTime())
         self._build_topology()
         self.vehicle_subscriptions = {}
         self.arrived_vehicle_info = []
@@ -310,8 +323,15 @@ class SUMOMultiAgentEnv:
 
         obs = self._get_observations()
         rewards = self._compute_rewards()
-        terminated = self.sumo.simulation.getMinExpectedNumber() <= 0 and self.sumo.simulation.getTime() >= self.num_seconds
-        truncated = self.sumo.simulation.getTime() >= self.num_seconds
+        elapsed = (
+            float(self.sumo.simulation.getTime())
+            - self.episode_start_time
+        )
+        terminated = (
+            self.sumo.simulation.getMinExpectedNumber() <= 0
+            and elapsed >= self.num_seconds
+        )
+        truncated = elapsed >= self.num_seconds
         info = self._get_step_info()
         return obs, rewards, terminated, truncated, info
 
@@ -543,6 +563,62 @@ class SUMOMultiAgentEnv:
                 current_cache[valid] = feat[:n_lane_features][valid]
                 self.cached_valid_observations[tl_id] = current_cache
 
+            if self.pad_heterogeneous_spaces:
+                lane_count = len(queues)
+                lane_slots = self.max_incoming_lanes
+
+                def pad_lanes(values):
+                    return np.pad(
+                        values,
+                        (0, lane_slots - lane_count),
+                        mode="constant",
+                    )
+
+                clean_feat = np.concatenate([
+                    pad_lanes(clean_feat[:lane_count]),
+                    pad_lanes(clean_feat[lane_count:2 * lane_count]),
+                    pad_lanes(clean_feat[2 * lane_count:3 * lane_count]),
+                    np.pad(
+                        clean_feat[3 * lane_count:],
+                        (0, self.max_action_dim - len(self.phases[tl_id])),
+                        mode="constant",
+                    ),
+                ]).astype(np.float32)
+                feat = np.concatenate([
+                    pad_lanes(feat[:lane_count]),
+                    pad_lanes(feat[lane_count:2 * lane_count]),
+                    pad_lanes(feat[2 * lane_count:3 * lane_count]),
+                    np.pad(
+                        feat[3 * lane_count:],
+                        (0, self.max_action_dim - len(self.phases[tl_id])),
+                        mode="constant",
+                    ),
+                ]).astype(np.float32)
+                # Structural padding is marked observed so it never activates
+                # a sensor-failure gate.
+                observation_mask = np.concatenate([
+                    np.pad(
+                        observation_mask[:lane_count],
+                        (0, lane_slots - lane_count),
+                        constant_values=1.0,
+                    ),
+                    np.pad(
+                        observation_mask[lane_count:2 * lane_count],
+                        (0, lane_slots - lane_count),
+                        constant_values=1.0,
+                    ),
+                    np.pad(
+                        observation_mask[2 * lane_count:3 * lane_count],
+                        (0, lane_slots - lane_count),
+                        constant_values=1.0,
+                    ),
+                    np.pad(
+                        observation_mask[3 * lane_count:],
+                        (0, self.max_action_dim - len(self.phases[tl_id])),
+                        constant_values=1.0,
+                    ),
+                ]).astype(np.float32)
+
             obs[tl_id] = feat
             self.last_clean_observations[tl_id] = clean_feat
             self.last_observation_masks[tl_id] = observation_mask
@@ -601,7 +677,14 @@ class SUMOMultiAgentEnv:
     def get_legal_actions(self) -> Dict[str, np.ndarray]:
         masks = {}
         for tl_id in self.tls_ids:
-            mask = np.ones(len(self.phases[tl_id]), dtype=bool)
+            action_count = len(self.phases[tl_id])
+            mask_size = (
+                self.max_action_dim
+                if self.pad_heterogeneous_spaces
+                else action_count
+            )
+            mask = np.zeros(mask_size, dtype=bool)
+            mask[:action_count] = True
             if self.pending_phase[tl_id] is not None:
                 mask[:] = False
                 mask[self.current_phase[tl_id]] = True
