@@ -1,0 +1,2 @@
+_base_: "fg_pdd_cologne3_structural_eval.yaml"
+experiment_name: "fg_pdd_cologne3_balanced_structural_eval"

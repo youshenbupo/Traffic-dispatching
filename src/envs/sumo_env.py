@@ -81,6 +81,9 @@ class SUMOMultiAgentEnv:
         self.sensor_noise_std = 0.0
         self.obs_dropout_prob = 0.0
         self.agent_obs_dropout_prob = 0.0
+        self.balanced_failure_min_count = 0
+        self.balanced_failure_max_count = 0
+        self.balanced_failure_no_failure_prob = 0.0
         self.burst_failure_start_prob = 0.0
         self.burst_failure_recovery_prob = 1.0
         self.burst_failure_state: Dict[str, bool] = {}
@@ -108,6 +111,16 @@ class SUMOMultiAgentEnv:
                 self.obs_dropout_prob = p.get("prob", 0.0)
             elif p["type"] == "agent_observation_dropout":
                 self.agent_obs_dropout_prob = p.get("prob", 0.0)
+            elif p["type"] == "balanced_agent_observation_dropout":
+                self.balanced_failure_min_count = int(
+                    p.get("min_count", 1)
+                )
+                self.balanced_failure_max_count = int(
+                    p.get("max_count", self.balanced_failure_min_count)
+                )
+                self.balanced_failure_no_failure_prob = float(
+                    p.get("no_failure_prob", 0.2)
+                )
             elif p["type"] == "burst_agent_observation_dropout":
                 self.burst_failure_start_prob = p.get("start_prob", 0.05)
                 self.burst_failure_recovery_prob = p.get(
@@ -451,6 +464,25 @@ class SUMOMultiAgentEnv:
         self.last_observation_masks = {}
         self.last_failure_age = {}
         self.last_structure_context = {}
+        balanced_failures = set()
+        if (
+            self.balanced_failure_max_count > 0
+            and self.tls_ids
+            and np.random.rand()
+            >= self.balanced_failure_no_failure_prob
+        ):
+            lower = min(
+                max(1, self.balanced_failure_min_count),
+                len(self.tls_ids),
+            )
+            upper = min(
+                max(lower, self.balanced_failure_max_count),
+                len(self.tls_ids),
+            )
+            failure_count = np.random.randint(lower, upper + 1)
+            balanced_failures = set(np.random.choice(
+                self.tls_ids, size=failure_count, replace=False
+            ))
         correlated_failures = set()
         if (
             self.correlated_failure_prob > 0
@@ -559,6 +591,7 @@ class SUMOMultiAgentEnv:
                     and np.random.rand() < self.agent_obs_dropout_prob
                 )
                 or burst_failed
+                or tl_id in balanced_failures
                 or tl_id in correlated_failures
             )
             if agent_failed:

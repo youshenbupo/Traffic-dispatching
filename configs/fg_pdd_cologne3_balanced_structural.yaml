@@ -1,0 +1,10 @@
+_base_: "fg_pdd_cologne3_structural.yaml"
+experiment_name: "fg_pdd_cologne3_balanced_structural"
+
+robustness:
+  enabled: true
+  perturbations:
+    - type: "balanced_agent_observation_dropout"
+      min_count: 1
+      max_count: 2
+      no_failure_prob: 0.2

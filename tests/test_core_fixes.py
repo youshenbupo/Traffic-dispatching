@@ -113,6 +113,21 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(config["training"]["num_episodes"], 100)
         self.assertEqual(config["dynamic_graph"]["reliability_coef"], 0.0)
 
+    def test_balanced_failure_curriculum_config(self):
+        path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "configs",
+            "fg_pdd_cologne3_balanced_structural.yaml",
+        )
+        config = load_config(path)
+        perturbation = config["robustness"]["perturbations"][0]
+        self.assertEqual(
+            perturbation["type"],
+            "balanced_agent_observation_dropout",
+        )
+        self.assertEqual(perturbation["min_count"], 1)
+        self.assertEqual(perturbation["max_count"], 2)
+
 
 class TestMAPPOUpdate(unittest.TestCase):
     def test_no_message_reconstruction_cannot_hallucinate(self):
