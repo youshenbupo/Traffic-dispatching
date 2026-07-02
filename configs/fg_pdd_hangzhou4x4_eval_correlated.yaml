@@ -1,0 +1,9 @@
+_base_: "fg_pdd_hangzhou4x4.yaml"
+experiment_name: "fg_pdd_hangzhou4x4_eval_correlated"
+
+robustness:
+  enabled: true
+  perturbations:
+    - type: "correlated_agent_observation_dropout"
+      prob: 0.6
+      fraction: 0.5

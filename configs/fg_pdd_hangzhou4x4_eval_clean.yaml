@@ -1,0 +1,6 @@
+_base_: "fg_pdd_hangzhou4x4.yaml"
+experiment_name: "fg_pdd_hangzhou4x4_eval_clean"
+
+robustness:
+  enabled: false
+  perturbations: []

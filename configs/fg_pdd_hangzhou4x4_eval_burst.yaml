@@ -1,0 +1,9 @@
+_base_: "fg_pdd_hangzhou4x4.yaml"
+experiment_name: "fg_pdd_hangzhou4x4_eval_burst"
+
+robustness:
+  enabled: true
+  perturbations:
+    - type: "burst_agent_observation_dropout"
+      start_prob: 0.05
+      recovery_prob: 0.12
