@@ -15,6 +15,7 @@ from src.envs.sumo_env import SUMOMultiAgentEnv
 from src.trainers.online_trainer import _agent_act
 from src.utils.config import load_config, merge_config
 from src.utils.metrics import MetricsTracker
+from src.risk import semantic_lane_tokens
 
 
 def temporal_carry_forward(observations, observation_masks, cache):
@@ -73,6 +74,11 @@ def main():
     )
     parser.add_argument("--shield_window", type=int, default=60)
     parser.add_argument("--shield_threshold", type=float, default=0.5)
+    parser.add_argument(
+        "--include_semantic_tokens",
+        action="store_true",
+        help="Record observed movement-semantic lane tokens for risk training.",
+    )
     parser.add_argument("--gpus", default=None)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
@@ -182,6 +188,19 @@ def main():
                 "active_vehicles": step_metrics["active_vehicles"],
                 "throughput": step_metrics["throughput"],
                 "shield_active": shield_active,
+                **({
+                    "semantic_tokens": {
+                        aid: semantic_lane_tokens(
+                            observations[aid],
+                            observation_masks[aid],
+                            env.phase_lane_matrix[aid],
+                            structure_context[aid][
+                                :env.max_incoming_lanes
+                            ],
+                        ).tolist()
+                        for aid in env.agent_ids
+                    }
+                } if args.include_semantic_tokens else {}),
             })
             observations = next_observations
             done = terminated or truncated

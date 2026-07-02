@@ -19,6 +19,11 @@ from src.networks.base import (
 from src.networks.comm import ReliabilityAwareCommLayer
 from src.utils.metrics import MetricsTracker
 from src.utils.config import load_config
+from src.risk import (
+    build_phase_lane_matrix,
+    future_spillback_targets,
+    semantic_lane_tokens,
+)
 from scripts.eval import select_policy_observations
 from scripts.probe_dual_policy_risk import (
     queue_shield_triggered,
@@ -191,6 +196,56 @@ class TestEvaluationInputs(unittest.TestCase):
         self.assertFalse(queue_shield_triggered([1.0], 2, 0.5))
         self.assertFalse(queue_shield_triggered([0.4, 0.6], 2, 0.5))
         self.assertTrue(queue_shield_triggered([0.6, 0.6], 2, 0.5))
+
+
+class TestSpillbackRiskData(unittest.TestCase):
+    def test_phase_lane_matrix_uses_green_signal_links(self):
+        matrix = build_phase_lane_matrix(
+            ["north", "east"],
+            ["Gr", "rG"],
+            [
+                [("north", "south", "via0")],
+                [("east", "west", "via1")],
+            ],
+            max_lanes=3,
+            max_phases=2,
+        )
+        np.testing.assert_array_equal(
+            matrix,
+            np.array([
+                [1.0, 0.0],
+                [0.0, 1.0],
+                [0.0, 0.0],
+            ], dtype=np.float32),
+        )
+
+    def test_semantic_tokens_preserve_masks_and_active_service(self):
+        observation = np.array([
+            1.0, 2.0, 10.0, 20.0, 3.0, 4.0, 1.0, 0.0,
+        ], dtype=np.float32)
+        mask = np.array([
+            0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0,
+        ], dtype=np.float32)
+        phase_lane = np.eye(2, dtype=np.float32)
+        tokens = semantic_lane_tokens(
+            observation, mask, phase_lane, np.ones(2, dtype=np.float32)
+        )
+        self.assertEqual(tokens.shape, (2, 10))
+        np.testing.assert_array_equal(tokens[:, :3], [[1, 10, 3], [2, 20, 4]])
+        np.testing.assert_array_equal(tokens[:, 3:6], [[0, 0, 0], [1, 1, 1]])
+        np.testing.assert_array_equal(tokens[:, -2], [1, 0])
+
+    def test_future_spillback_target_precedes_persistent_growth(self):
+        targets = future_spillback_targets(
+            queue_length=[0.1, 0.2, 0.8, 1.0],
+            active_vehicles=[10, 20, 70, 90],
+            throughput=[1, 1, 0, 0],
+            horizon=3,
+            active_growth_threshold=50,
+        )
+        self.assertEqual(targets["spillback_risk"][0], 1.0)
+        self.assertEqual(targets["valid"][0], 1.0)
+        self.assertEqual(targets["valid"][-1], 0.0)
 
 
 class TestMAPPOUpdate(unittest.TestCase):

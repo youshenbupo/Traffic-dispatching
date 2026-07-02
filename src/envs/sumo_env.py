@@ -8,6 +8,8 @@ import xml.etree.ElementTree as ET
 from typing import Dict, List, Tuple, Optional, Any
 from collections import defaultdict
 
+from src.risk import build_phase_lane_matrix
+
 # SUMO imports
 try:
     import traci
@@ -70,6 +72,7 @@ class SUMOMultiAgentEnv:
         self.phases: Dict[str, List[str]] = {}
         self.incoming_lanes: Dict[str, List[str]] = {}
         self.outgoing_lanes: Dict[str, List[str]] = {}
+        self.phase_lane_matrix: Dict[str, np.ndarray] = {}
         self.current_phase: Dict[str, int] = {}
         self.phase_duration: Dict[str, int] = {}
         self.pending_phase: Dict[str, Optional[int]] = {}
@@ -275,6 +278,16 @@ class SUMOMultiAgentEnv:
         self.max_action_dim = max(
             (len(v) for v in self.phases.values()), default=0
         )
+        self.phase_lane_matrix = {
+            tl_id: build_phase_lane_matrix(
+                self.incoming_lanes[tl_id],
+                self.phases[tl_id],
+                self.sumo.trafficlight.getControlledLinks(tl_id),
+                self.max_incoming_lanes,
+                self.max_action_dim,
+            )
+            for tl_id in self.tls_ids
+        }
         self.tls_positions = {
             tl_id: self._get_tls_position_uncached(tl_id)
             for tl_id in self.tls_ids
