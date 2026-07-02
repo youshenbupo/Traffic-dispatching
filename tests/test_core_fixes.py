@@ -20,6 +20,7 @@ from src.networks.comm import ReliabilityAwareCommLayer
 from src.utils.metrics import MetricsTracker
 from src.utils.config import load_config
 from scripts.eval import select_policy_observations
+from scripts.probe_dual_policy_risk import temporal_carry_forward
 
 
 class _TrafficLightStub:
@@ -170,6 +171,18 @@ class TestEvaluationInputs(unittest.TestCase):
         )
         self.assertIs(policy_obs, observed)
         self.assertIs(policy_mask, observed_mask)
+
+    def test_temporal_carry_forward_is_causal(self):
+        cache = {}
+        first = {"A": np.array([1.0, 2.0], dtype=np.float32)}
+        full = {"A": np.ones(2, dtype=np.float32)}
+        temporal_carry_forward(first, full, cache)
+        second = {"A": np.array([0.0, 3.0], dtype=np.float32)}
+        partial = {"A": np.array([0.0, 1.0], dtype=np.float32)}
+        filled = temporal_carry_forward(second, partial, cache)
+        np.testing.assert_array_equal(
+            filled["A"], np.array([1.0, 3.0], dtype=np.float32)
+        )
 
 
 class TestMAPPOUpdate(unittest.TestCase):
