@@ -16,6 +16,21 @@ from src.trainers.online_trainer import _agent_act
 from src.utils.metrics import MetricsTracker
 
 
+def select_policy_observations(obs, obs_mask, clean_obs, source):
+    """Select observed inputs or privileged clean inputs for oracle evaluation."""
+    if source == "observed":
+        return obs, obs_mask
+    if source == "clean":
+        return (
+            {aid: value.copy() for aid, value in clean_obs.items()},
+            {
+                aid: np.ones_like(value, dtype=np.float32)
+                for aid, value in clean_obs.items()
+            },
+        )
+    raise ValueError(f"Unknown observation source: {source}")
+
+
 def set_gpus(gpu_str: str):
     os.environ["CUDA_VISIBLE_DEVICES"] = gpu_str
     print(f"Using GPUs: {gpu_str}")
@@ -51,6 +66,15 @@ def main():
     parser.add_argument("--num_episodes", type=int, default=10)
     parser.add_argument("--seed_start", type=int, default=20000)
     parser.add_argument("--output", type=str, default=None)
+    parser.add_argument(
+        "--observation_source",
+        choices=("observed", "clean"),
+        default="observed",
+        help=(
+            "Use corrupted environment observations (observed) or privileged "
+            "pre-perturbation observations (clean) as an oracle upper bound."
+        ),
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -92,9 +116,12 @@ def main():
                     env, "last_structure_context", {}
                 ).items()
             }
+            policy_obs, policy_obs_mask = select_policy_observations(
+                obs, obs_mask, clean_obs, args.observation_source
+            )
             actions, _, _ = _agent_act(
-                agent, obs, masks, adj, explore=False,
-                obs_mask=obs_mask, clean_obs=clean_obs,
+                agent, policy_obs, masks, adj, explore=False,
+                obs_mask=policy_obs_mask, clean_obs=clean_obs,
                 failure_age=failure_age,
                 structure_context=structure_context,
             )
@@ -123,6 +150,10 @@ def main():
     result["_statistics"] = statistics
     result["_episodes"] = metrics_list
     result["_seeds"] = [args.seed_start + ep for ep in range(args.num_episodes)]
+    result["_evaluation"] = {
+        "observation_source": args.observation_source,
+        "oracle": args.observation_source == "clean",
+    }
     out_path = args.output or os.path.join(
         config.get("result_dir", "./results"), "eval_results.json"
     )

@@ -19,6 +19,7 @@ from src.networks.base import (
 from src.networks.comm import ReliabilityAwareCommLayer
 from src.utils.metrics import MetricsTracker
 from src.utils.config import load_config
+from scripts.eval import select_policy_observations
 
 
 class _TrafficLightStub:
@@ -127,6 +128,31 @@ class TestConfig(unittest.TestCase):
         )
         self.assertEqual(perturbation["min_count"], 1)
         self.assertEqual(perturbation["max_count"], 2)
+
+
+class TestEvaluationInputs(unittest.TestCase):
+    def test_clean_oracle_replaces_observation_and_mask(self):
+        observed = {"A": np.array([0.0, 2.0], dtype=np.float32)}
+        observed_mask = {"A": np.array([0.0, 1.0], dtype=np.float32)}
+        clean = {"A": np.array([4.0, 2.0], dtype=np.float32)}
+        policy_obs, policy_mask = select_policy_observations(
+            observed, observed_mask, clean, "clean"
+        )
+        np.testing.assert_array_equal(policy_obs["A"], clean["A"])
+        np.testing.assert_array_equal(
+            policy_mask["A"], np.ones(2, dtype=np.float32)
+        )
+        self.assertIsNot(policy_obs["A"], clean["A"])
+
+    def test_observed_mode_preserves_environment_inputs(self):
+        observed = {"A": np.array([0.0, 2.0], dtype=np.float32)}
+        observed_mask = {"A": np.array([0.0, 1.0], dtype=np.float32)}
+        clean = {"A": np.array([4.0, 2.0], dtype=np.float32)}
+        policy_obs, policy_mask = select_policy_observations(
+            observed, observed_mask, clean, "observed"
+        )
+        self.assertIs(policy_obs, observed)
+        self.assertIs(policy_mask, observed_mask)
 
 
 class TestMAPPOUpdate(unittest.TestCase):
