@@ -43,6 +43,13 @@ class OnlineTrainer:
         self.update_interval = config.get("training", {}).get("update_interval", 100)
         self.eval_interval = config.get("training", {}).get("eval_interval", 20)
         self.save_interval = config.get("training", {}).get("save_interval", 50)
+        self.model_selection_metric = config.get("training", {}).get(
+            "model_selection_metric",
+            "time_spent_per_departed_vehicle",
+        )
+        self.model_selection_mode = config.get("training", {}).get(
+            "model_selection_mode", "min"
+        )
         graph_cfg = config.get("dynamic_graph", {})
         self.graph_type = graph_cfg.get("graph_type", "static")
         self.neighbor_k = graph_cfg.get("neighbor_k", 1)
@@ -53,7 +60,11 @@ class OnlineTrainer:
         self.csv_logger = CSVLogger(self.result_dir, "training_metrics.csv")
 
     def run(self):
-        best_metric = float("inf")
+        best_metric = (
+            float("inf")
+            if self.model_selection_mode == "min"
+            else -float("inf")
+        )
         for ep in tqdm(range(1, self.num_episodes + 1), desc="Training"):
             obs, info = self.env.reset(seed=self.cfg.get("seed", 42) + ep)
             episode_reward = 0.0
@@ -157,9 +168,29 @@ class OnlineTrainer:
                 eval_metrics["phase"] = "eval"
                 self.csv_logger.log(eval_metrics)
                 self.logger.info(f"Episode {ep} eval: {eval_metrics}")
-                if eval_metrics.get("average_travel_time", float("inf")) < best_metric:
-                    best_metric = eval_metrics["average_travel_time"]
+                # Preserve every validation candidate for post-hoc auditing.
+                self.agent.save(os.path.join(
+                    self.log_dir, f"eval_checkpoint_{ep}"
+                ))
+                candidate = eval_metrics.get(self.model_selection_metric)
+                if candidate is None:
+                    raise KeyError(
+                        "Model-selection metric missing from evaluation: "
+                        f"{self.model_selection_metric}"
+                    )
+                improved = (
+                    candidate < best_metric
+                    if self.model_selection_mode == "min"
+                    else candidate > best_metric
+                )
+                if improved:
+                    best_metric = candidate
                     self.agent.save(os.path.join(self.log_dir, "best_model"))
+                    self.logger.info(
+                        "Selected best checkpoint: %s=%.6f",
+                        self.model_selection_metric,
+                        candidate,
+                    )
 
             if ep % self.save_interval == 0:
                 self.agent.save(os.path.join(self.log_dir, f"checkpoint_{ep}"))
