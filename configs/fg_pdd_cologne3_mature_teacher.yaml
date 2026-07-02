@@ -1,0 +1,5 @@
+_base_: "fg_pdd_cologne3.yaml"
+experiment_name: "fg_pdd_cologne3_mature_teacher"
+
+dynamic_graph:
+  decision_teacher_path: "logs/selected_teachers_mature/cologne3"

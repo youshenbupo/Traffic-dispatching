@@ -10,17 +10,22 @@ import shutil
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--scenario", required=True)
+    parser.add_argument("--audit_prefix", default=None)
+    parser.add_argument(
+        "--experiment_stage",
+        choices=("continue", "base30"),
+        default="continue",
+    )
     parser.add_argument("--audit_dir", default="results/teacher_audit")
     parser.add_argument("--output_root", default="logs/selected_teachers")
     parser.add_argument("--completion_fraction", type=float, default=0.95)
     args = parser.parse_args()
 
-    pattern = os.path.join(
-        args.audit_dir, f"{args.scenario}_s*_model.json"
-    )
+    audit_prefix = args.audit_prefix or args.scenario
+    pattern = os.path.join(args.audit_dir, f"{audit_prefix}_s*_model.json")
     candidates = []
     regex = re.compile(
-        rf"{re.escape(args.scenario)}_s(\d+)_(best_model|final_model)\.json$"
+        rf"{re.escape(audit_prefix)}_s(\d+)_(best_model|final_model)\.json$"
     )
     for path in sorted(glob.glob(pattern)):
         match = regex.search(os.path.basename(path))
@@ -56,9 +61,14 @@ def main():
     )
 
     if args.scenario == "hangzhou":
-        experiment = f"mappo_hangzhou4x4_continue_s{selected['seed']}"
+        experiment = (
+            f"mappo_hangzhou4x4_{args.experiment_stage}_s"
+            f"{selected['seed']}"
+        )
     elif args.scenario == "cologne3":
-        experiment = f"mappo_cologne3_continue_s{selected['seed']}"
+        experiment = (
+            f"mappo_cologne3_{args.experiment_stage}_s{selected['seed']}"
+        )
     else:
         raise ValueError(f"Unknown scenario {args.scenario}")
     source = os.path.join(
@@ -75,6 +85,7 @@ def main():
         "completion_threshold": threshold,
         "selected": selected,
         "source_checkpoint": source,
+        "experiment_stage": args.experiment_stage,
         "eligible_candidates": eligible,
         "all_candidates": candidates,
     }
