@@ -92,6 +92,9 @@ class MAPPOAgent:
         self.failure_age_max = float(
             graph_cfg.get("failure_age_max", 20.0)
         )
+        self.structure_conditioned_adapter = graph_cfg.get(
+            "structure_conditioned_adapter", False
+        )
 
         self.device = torch.device("cuda" if torch.cuda.is_available() and config.get("training", {}).get("use_gpu", True) else "cpu")
 
@@ -112,7 +115,10 @@ class MAPPOAgent:
                 if self.failure_gated_actor:
                     actor_class = (
                         FailureContextAnchoredActor
-                        if self.failure_age_conditioning
+                        if (
+                            self.failure_age_conditioning
+                            or self.structure_conditioned_adapter
+                        )
                         else FailureGatedAnchoredActor
                     )
                 elif graph_cfg.get("anchored_local_actor", False):
@@ -179,7 +185,8 @@ class MAPPOAgent:
         self.buffer = []
 
     def _inject_failure_context(
-        self, policy_features, observation_masks, failure_ages=None
+        self, policy_features, observation_masks, failure_ages=None,
+        structure_context=None,
     ):
         """Reserve auxiliary channels for failure presence and normalized age."""
         if not self.failure_gated_actor:
@@ -204,13 +211,29 @@ class MAPPOAgent:
                 ages.clamp(min=0.0, max=self.failure_age_max)
             ) / scale
             result[..., 1:2] = normalized_age * missing
+        if (
+            getattr(self, "structure_conditioned_adapter", False)
+            and structure_context is not None
+        ):
+            context = torch.as_tensor(
+                structure_context,
+                dtype=result.dtype,
+                device=result.device,
+            )
+            start = 2 if self.failure_age_conditioning else 1
+            width = min(context.shape[-1], result.shape[-1] - start)
+            if width > 0:
+                result[..., start:start + width] = (
+                    context[..., :width] * missing
+                )
         return result
 
     def act(self, obs: Dict[str, np.ndarray], masks: Dict[str, np.ndarray] = None,
             explore: bool = True, adj: np.ndarray = None,
             obs_mask: Dict[str, np.ndarray] = None,
             clean_obs: Dict[str, np.ndarray] = None,
-            failure_age: Dict[str, float] = None) -> Dict[str, int]:
+            failure_age: Dict[str, float] = None,
+            structure_context: Dict[str, np.ndarray] = None) -> Dict[str, int]:
         obs_tensor = torch.FloatTensor(np.stack([obs[aid] for aid in self.agent_ids])).to(self.device)
         if obs_mask is None:
             obs_mask_tensor = torch.ones_like(obs_tensor)
@@ -264,8 +287,15 @@ class MAPPOAgent:
                                 failure_age.get(aid, 0.0)
                                 for aid in self.agent_ids
                             ], dtype=np.float32)
+                        structure_values = None
+                        if structure_context is not None:
+                            structure_values = np.stack([
+                                structure_context[aid]
+                                for aid in self.agent_ids
+                            ])
                         policy_comm = self._inject_failure_context(
-                            policy_comm, obs_mask_tensor, age_values
+                            policy_comm, obs_mask_tensor, age_values,
+                            structure_values,
                         )
                     missing = 1.0 - obs_mask_tensor
                     missing_count = missing.sum().clamp(min=1.0)
@@ -322,6 +352,7 @@ class MAPPOAgent:
     def store_transition(
         self, obs, action, reward, value, log_prob, mask, adj, done,
         clean_obs=None, obs_mask=None, failure_age=None,
+        structure_context=None,
     ):
         self.buffer.append({
             "obs": obs,
@@ -335,6 +366,7 @@ class MAPPOAgent:
             "clean_obs": clean_obs if clean_obs is not None else obs,
             "obs_mask": obs_mask,
             "failure_age": failure_age,
+            "structure_context": structure_context,
         })
 
     def _compute_advantages(self, rewards, values, dones):
@@ -389,6 +421,29 @@ class MAPPOAgent:
             ], dtype=np.float32)
             for t in self.buffer
         ])).to(self.device)
+        structure_contexts = None
+        structure_dim = max(
+            (
+                len(value)
+                for transition in self.buffer
+                for value in (
+                    transition.get("structure_context") or {}
+                ).values()
+            ),
+            default=0,
+        )
+        if structure_dim > 0:
+            structure_contexts = torch.FloatTensor(np.stack([
+                np.stack([
+                    (
+                        t["structure_context"][aid]
+                        if t.get("structure_context") is not None
+                        else np.zeros(structure_dim, dtype=np.float32)
+                    )
+                    for aid in self.agent_ids
+                ])
+                for t in self.buffer
+            ])).to(self.device)
 
         rewards = np.array([np.mean([t["reward"][aid] for aid in self.agent_ids]) for t in self.buffer])
         values = np.array([np.mean([t["value"][aid] for aid in self.agent_ids]) for t in self.buffer])
@@ -433,7 +488,8 @@ class MAPPOAgent:
                     policy_comm = policy_comm * decision_confidence
                     if self.failure_gated_actor:
                         policy_comm = self._inject_failure_context(
-                            policy_comm, obs_masks, failure_ages
+                            policy_comm, obs_masks, failure_ages,
+                            structure_contexts,
                         )
                     global_state = torch.cat(
                         [reconstructed, policy_comm], dim=-1
@@ -498,7 +554,8 @@ class MAPPOAgent:
                 student_local_comm = zero_comm
                 if self.failure_gated_actor:
                     student_local_comm = self._inject_failure_context(
-                        zero_comm, obs_masks, failure_ages
+                        zero_comm, obs_masks, failure_ages,
+                        structure_contexts,
                     )
                 with torch.no_grad():
                     if self.teacher_actor is not None:

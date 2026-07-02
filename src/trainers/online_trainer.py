@@ -10,7 +10,7 @@ from src.utils.csv_logger import CSVLogger
 
 def _agent_act(
     agent, obs, masks, adj, explore=True, obs_mask=None, clean_obs=None,
-    failure_age=None,
+    failure_age=None, structure_context=None,
 ):
     """Call agent.act and normalize return to (actions, log_probs, values)."""
     import inspect
@@ -24,6 +24,8 @@ def _agent_act(
         kwargs["clean_obs"] = clean_obs
     if "failure_age" in sig.parameters:
         kwargs["failure_age"] = failure_age
+    if "structure_context" in sig.parameters:
+        kwargs["structure_context"] = structure_context
     result = agent.act(obs, masks, **kwargs)
     if isinstance(result, tuple):
         actions, log_probs, values = result
@@ -85,6 +87,12 @@ class OnlineTrainer:
                 failure_age = dict(
                     getattr(self.env, "last_failure_age", {})
                 )
+                structure_context = {
+                    aid: value.copy()
+                    for aid, value in getattr(
+                        self.env, "last_structure_context", {}
+                    ).items()
+                }
                 adj = self.env.get_adjacency(
                     mode=self.graph_type, k=self.neighbor_k
                 )
@@ -92,6 +100,7 @@ class OnlineTrainer:
                     self.agent, obs, masks, adj, explore=True,
                     obs_mask=obs_mask, clean_obs=clean_obs,
                     failure_age=failure_age,
+                    structure_context=structure_context,
                 )
 
                 if hasattr(self.agent, "store_transition") and log_probs is not None:
@@ -116,6 +125,8 @@ class OnlineTrainer:
                         transition["obs_mask"] = obs_mask
                     if "failure_age" in parameters:
                         transition["failure_age"] = failure_age
+                    if "structure_context" in parameters:
+                        transition["structure_context"] = structure_context
                     self.agent.store_transition(**transition)
 
                 next_obs, rewards, terminated, truncated, info_step = self.env.step(actions)
@@ -221,10 +232,17 @@ class OnlineTrainer:
                 failure_age = dict(
                     getattr(self.env, "last_failure_age", {})
                 )
+                structure_context = {
+                    aid: value.copy()
+                    for aid, value in getattr(
+                        self.env, "last_structure_context", {}
+                    ).items()
+                }
                 actions, _, _ = _agent_act(
                     self.agent, obs, masks, adj, explore=False,
                     obs_mask=obs_mask, clean_obs=clean_obs,
                     failure_age=failure_age,
+                    structure_context=structure_context,
                 )
                 next_obs, rewards, terminated, truncated, info_step = self.env.step(actions)
                 done = terminated or truncated

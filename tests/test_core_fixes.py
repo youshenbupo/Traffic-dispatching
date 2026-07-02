@@ -241,6 +241,33 @@ class TestMAPPOUpdate(unittest.TestCase):
             actor(failed_fresh).probs, actor(failed_old).probs
         ))
 
+    def test_structure_context_is_visible_only_during_failure(self):
+        import torch
+
+        agent = MAPPOAgent.__new__(MAPPOAgent)
+        agent.failure_gated_actor = True
+        agent.failure_age_conditioning = False
+        agent.structure_conditioned_adapter = True
+        features = torch.zeros(2, 8)
+        observation_masks = torch.tensor([
+            [1.0, 1.0, 1.0],
+            [0.0, 0.0, 1.0],
+        ])
+        structure = torch.tensor([
+            [1.0, 0.0, 1.0],
+            [1.0, 0.0, 1.0],
+        ])
+        context = agent._inject_failure_context(
+            features,
+            observation_masks,
+            structure_context=structure,
+        )
+        self.assertTrue(torch.equal(context[0], torch.zeros(8)))
+        self.assertEqual(float(context[1, 0]), 1.0)
+        self.assertTrue(torch.equal(
+            context[1, 1:4], structure[1]
+        ))
+
     def test_multi_agent_ratio_update_is_finite(self):
         config = {
             "agent": {"hidden_dim": 16},

@@ -94,6 +94,7 @@ class SUMOMultiAgentEnv:
         self.last_observation_quality: Dict[str, float] = {}
         self.last_clean_observations: Dict[str, np.ndarray] = {}
         self.last_observation_masks: Dict[str, np.ndarray] = {}
+        self.last_structure_context: Dict[str, np.ndarray] = {}
         self.failure_age: Dict[str, int] = {}
         self.last_failure_age: Dict[str, float] = {}
         self._parse_perturbations()
@@ -449,6 +450,7 @@ class SUMOMultiAgentEnv:
         self.last_clean_observations = {}
         self.last_observation_masks = {}
         self.last_failure_age = {}
+        self.last_structure_context = {}
         correlated_failures = set()
         if (
             self.correlated_failure_prob > 0
@@ -651,6 +653,17 @@ class SUMOMultiAgentEnv:
             self.last_clean_observations[tl_id] = clean_feat
             self.last_observation_masks[tl_id] = observation_mask
             self.last_observation_quality[tl_id] = quality
+            lane_presence = np.zeros(
+                self.max_incoming_lanes, dtype=np.float32
+            )
+            lane_presence[:len(self.incoming_lanes[tl_id])] = 1.0
+            phase_presence = np.zeros(
+                self.max_action_dim, dtype=np.float32
+            )
+            phase_presence[:len(self.phases[tl_id])] = 1.0
+            self.last_structure_context[tl_id] = np.concatenate([
+                lane_presence, phase_presence
+            ])
         return obs
 
     def _compute_rewards(self) -> Dict[str, float]:

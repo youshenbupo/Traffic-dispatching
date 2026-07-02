@@ -86,10 +86,17 @@ def main():
             failure_age = dict(
                 getattr(env, "last_failure_age", {})
             )
+            structure_context = {
+                aid: value.copy()
+                for aid, value in getattr(
+                    env, "last_structure_context", {}
+                ).items()
+            }
             actions, _, _ = _agent_act(
                 agent, obs, masks, adj, explore=False,
                 obs_mask=obs_mask, clean_obs=clean_obs,
                 failure_age=failure_age,
+                structure_context=structure_context,
             )
             next_obs, rewards, terminated, truncated, info_step = env.step(actions)
             done = terminated or truncated
