@@ -99,3 +99,26 @@ queue divergence, improved tail risk and mean total time over teacher-only,
 and replication across training and evaluation seeds. Generic imputation,
 always-on temporal fallback, and reactive queue thresholds are rejected by
 the current evidence.
+
+## Implemented proactive-risk pipeline
+
+The repository now includes the first implementation stage:
+
+- `src/risk/spillback.py` builds lane/phase service semantics and privileged
+  future-spillback targets.
+- `scripts/probe_dual_policy_risk.py --include_semantic_tokens` records causal
+  observed-token histories.
+- `scripts/build_spillback_dataset.py` creates seed-tagged temporal datasets
+  without using future information in the input sequence.
+- `src/risk/model.py` implements lane pooling, failure-only healthy-neighbor
+  fusion, and a GRU risk predictor.
+- `risk_gated_logits` provides an exact nominal bypass unless a detected
+  failure is both high-risk and low-uncertainty.
+
+A two-seed smoke dataset contains 218 samples with 60-step histories and
+120-step prediction horizons. On failure seed 62000, the first positive label
+appears at step 419, approximately 49 decisions before the sustained queue
+criterion used by the reactive shield; normal seed 62001 has no positive
+labels. This validates data flow and target lead time only. It is not a
+generalization result; a multi-seed train/validation/test study is still
+required before integrating the predictor into control.

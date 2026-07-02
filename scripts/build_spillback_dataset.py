@@ -27,9 +27,18 @@ def main():
     for pattern in args.inputs:
         paths.extend(glob.glob(pattern))
     episodes = []
+    adjacency = None
     for path in sorted(set(paths)):
         with open(path, encoding="utf-8") as stream:
-            episodes.extend(json.load(stream)["episodes"])
+            payload = json.load(stream)
+        episodes.extend(payload["episodes"])
+        candidate = payload.get("adjacency")
+        if candidate is not None:
+            candidate = np.asarray(candidate, dtype=np.float32)
+            if adjacency is None:
+                adjacency = candidate
+            elif not np.array_equal(candidate, adjacency):
+                raise ValueError("Adjacency differs across input traces")
     if not episodes:
         raise ValueError("No risk-probe episodes found")
 
@@ -97,6 +106,13 @@ def main():
             "future_active_growth",
             "future_departures",
         ]),
+        adjacency=(
+            adjacency
+            if adjacency is not None
+            else np.ones(
+                (len(agent_order), len(agent_order)), dtype=np.float32
+            )
+        ),
     )
     positive_rate = float(np.mean(np.asarray(labels)[:, 0]))
     print(

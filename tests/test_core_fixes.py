@@ -22,6 +22,8 @@ from src.utils.config import load_config
 from src.risk import (
     build_phase_lane_matrix,
     future_spillback_targets,
+    risk_gated_logits,
+    SemanticSpillbackPredictor,
     semantic_lane_tokens,
 )
 from scripts.eval import select_policy_observations
@@ -246,6 +248,46 @@ class TestSpillbackRiskData(unittest.TestCase):
         self.assertEqual(targets["spillback_risk"][0], 1.0)
         self.assertEqual(targets["valid"][0], 1.0)
         self.assertEqual(targets["valid"][-1], 0.0)
+
+    def test_neighbor_fusion_is_disabled_without_failure(self):
+        import torch
+
+        torch.manual_seed(1)
+        model = SemanticSpillbackPredictor(
+            token_dim=6, hidden_dim=8, dropout=0.0
+        ).eval()
+        sequence = torch.randn(2, 4, 3, 2, 6)
+        sequence[..., -1] = 1.0
+        no_failure = torch.zeros(2, 4, 3)
+        sparse = torch.eye(3)
+        dense = torch.ones(3, 3)
+        first, _ = model(sequence, no_failure, sparse)
+        second, _ = model(sequence, no_failure, dense)
+        self.assertTrue(torch.allclose(first, second))
+
+    def test_risk_gate_has_exact_clean_bypass(self):
+        import torch
+
+        nominal = torch.tensor([[1.0, 2.0]])
+        fallback = torch.tensor([[8.0, 9.0]])
+        selected, gate = risk_gated_logits(
+            nominal,
+            fallback,
+            failure_detected=torch.tensor([False]),
+            risk_probability=torch.tensor([1.0]),
+            uncertainty=torch.tensor([0.0]),
+        )
+        self.assertTrue(torch.equal(selected, nominal))
+        self.assertFalse(gate.item())
+        failed, failed_gate = risk_gated_logits(
+            nominal,
+            fallback,
+            failure_detected=torch.tensor([True]),
+            risk_probability=torch.tensor([0.9]),
+            uncertainty=torch.tensor([0.1]),
+        )
+        self.assertTrue(torch.equal(failed, fallback))
+        self.assertTrue(failed_gate.item())
 
 
 class TestMAPPOUpdate(unittest.TestCase):

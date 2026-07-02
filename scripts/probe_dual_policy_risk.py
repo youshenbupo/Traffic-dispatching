@@ -220,7 +220,13 @@ def main():
 
     os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as stream:
-        json.dump({"episodes": results}, stream, indent=2)
+        json.dump({
+            "episodes": results,
+            "agent_order": list(env.agent_ids),
+            "adjacency": env.get_adjacency(
+                mode=graph_type, k=neighbor_k
+            ).tolist(),
+        }, stream, indent=2)
     env.close()
 
 

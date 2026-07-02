@@ -5,9 +5,12 @@ from .spillback import (
     future_spillback_targets,
     semantic_lane_tokens,
 )
+from .model import SemanticSpillbackPredictor, risk_gated_logits
 
 __all__ = [
     "build_phase_lane_matrix",
     "future_spillback_targets",
     "semantic_lane_tokens",
+    "SemanticSpillbackPredictor",
+    "risk_gated_logits",
 ]
