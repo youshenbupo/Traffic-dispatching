@@ -199,10 +199,16 @@ adapter intervention after sensor loss.
 
 ## 6. Limitations and next experiments
 
-The current evidence uses five training seeds but still only one synthetic
-network. Clean-condition behavior is preserved exactly by construction and
-teacher/failure sensitivity has been probed, but external validity remains
-untested. The next admission test is normalized training and equal-budget
-evaluation on Hangzhou, followed by a second real network when its scenario is
-available. If the waiting/queue gains do not persist, FG-PDD should be framed
-as synthetic-network evidence rather than a general traffic-control result.
+Real-network evidence is heterogeneous. Hangzhou benefits from a
+validation-selected frozen teacher and an active failure adapter, whereas the
+current Cologne3 structural adapter collapses to the mature teacher's discrete
+actions. A 20-seed Cologne3 counterfactual further shows that giving the fixed
+teacher perfect clean observations is not a performance upper bound: clean
+and corrupted inputs trigger gridlock on different seeds. Always-on
+last-valid fallback also creates new failures, and a reactive congestion
+threshold intervenes too late. These findings reject generic imputation as the
+next extension. The next admission test is a proactive spillback-risk model
+using semantic movement tokens, temporal history, and failure-only healthy
+neighbor fusion while retaining exact clean bypass. Full measurements and
+negative controls are reported in
+`docs/cologne_oracle_risk_study.md`.
