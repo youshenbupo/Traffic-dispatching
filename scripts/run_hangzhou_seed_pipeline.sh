@@ -50,19 +50,19 @@ python scripts/train.py \
     --pretrained_model "logs/${continued}/final_model" \
     > "logs/hz_base30_s${seed}.log" 2>&1
 
-mkdir -p results/hangzhou_fg_pdd
+mkdir -p results/hangzhou_fg_pdd_v2
 python scripts/eval.py \
     --config configs/mappo_hangzhou4x4_robust_eval.yaml \
     --model_path "logs/${baseline}/final_model" --gpus "$gpu" \
     --num_episodes 5 --seed_start 52000 \
-    --output "results/hangzhou_fg_pdd/base30_s${seed}.csv" \
+    --output "results/hangzhou_fg_pdd_v2/base30_s${seed}.json" \
     > "logs/hz_base30_eval_s${seed}.log" 2>&1
 
 python scripts/eval.py \
     --config configs/fg_pdd_hangzhou4x4_eval.yaml \
     --model_path "logs/${student}/final_model" --gpus "$gpu" \
     --num_episodes 5 --seed_start 52000 \
-    --output "results/hangzhou_fg_pdd/fg_s${seed}.csv" \
+    --output "results/hangzhou_fg_pdd_v2/fg_s${seed}.json" \
     > "logs/hz_fg_eval_s${seed}.log" 2>&1
 
 echo "Hangzhou seed ${seed} pipeline completed."
