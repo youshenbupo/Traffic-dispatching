@@ -5,6 +5,7 @@ import os
 import sys
 
 import numpy as np
+import torch
 
 sys.path.insert(
     0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -15,7 +16,7 @@ from src.envs.sumo_env import SUMOMultiAgentEnv
 from src.trainers.online_trainer import _agent_act
 from src.utils.config import load_config, merge_config
 from src.utils.metrics import MetricsTracker
-from src.risk import semantic_lane_tokens
+from src.risk import SemanticSpillbackPredictor, semantic_lane_tokens
 
 
 def temporal_carry_forward(observations, observation_masks, cache):
@@ -69,7 +70,7 @@ def main():
     parser.add_argument("--seeds", required=True)
     parser.add_argument(
         "--control_source",
-        choices=("observed", "temporal", "queue_shield"),
+        choices=("observed", "temporal", "queue_shield", "risk_model"),
         default="observed",
     )
     parser.add_argument("--shield_window", type=int, default=60)
@@ -78,6 +79,22 @@ def main():
         "--include_semantic_tokens",
         action="store_true",
         help="Record observed movement-semantic lane tokens for risk training.",
+    )
+    parser.add_argument(
+        "--risk_model_path",
+        default=None,
+        help="Semantic spillback predictor checkpoint for risk_model control.",
+    )
+    parser.add_argument("--risk_history", type=int, default=60)
+    parser.add_argument("--risk_threshold", type=float, default=0.5)
+    parser.add_argument(
+        "--risk_aux_qmean_threshold",
+        type=float,
+        default=None,
+        help=(
+            "Optional recoverability gate: switch only when the model also "
+            "predicts future queue mean above this value."
+        ),
     )
     parser.add_argument("--gpus", default=None)
     parser.add_argument("--output", required=True)
@@ -95,6 +112,33 @@ def main():
     env.reset(seed=config.get("seed", 42))
     agent = make_agent(env, config)
     agent.load(args.model_path)
+    risk_model = None
+    risk_aux_mean = None
+    risk_aux_std = None
+    risk_device = torch.device(
+        "cuda" if torch.cuda.is_available() else "cpu"
+    )
+    if args.control_source == "risk_model":
+        if args.risk_model_path is None:
+            raise ValueError("--risk_model_path is required for risk_model")
+        checkpoint = torch.load(args.risk_model_path, map_location=risk_device)
+        risk_model = SemanticSpillbackPredictor(
+            token_dim=int(checkpoint["token_dim"]),
+            hidden_dim=int(checkpoint["hidden_dim"]),
+        ).to(risk_device)
+        risk_model.load_state_dict(checkpoint["model"], strict=False)
+        risk_model.eval()
+        if "auxiliary_mean" in checkpoint and "auxiliary_std" in checkpoint:
+            risk_aux_mean = torch.tensor(
+                checkpoint["auxiliary_mean"],
+                dtype=torch.float32,
+                device=risk_device,
+            )
+            risk_aux_std = torch.tensor(
+                checkpoint["auxiliary_std"],
+                dtype=torch.float32,
+                device=risk_device,
+            )
     graph_cfg = config.get("dynamic_graph", {})
     graph_type = graph_cfg.get("graph_type", "static")
     neighbor_k = graph_cfg.get("neighbor_k", 1)
@@ -106,6 +150,8 @@ def main():
         tracker = MetricsTracker()
         trace = []
         queue_history = []
+        semantic_history = []
+        failure_history = []
         shield_active = False
         done = False
         while not done:
@@ -153,6 +199,21 @@ def main():
                 aid for aid in env.agent_ids
                 if np.min(observation_masks[aid]) < 1.0
             ]
+            current_semantic_tokens = {
+                aid: semantic_lane_tokens(
+                    observations[aid],
+                    observation_masks[aid],
+                    env.phase_lane_matrix[aid],
+                    structure_context[aid][:env.max_incoming_lanes],
+                )
+                for aid in env.agent_ids
+            }
+            semantic_history.append(np.asarray([
+                current_semantic_tokens[aid] for aid in env.agent_ids
+            ], dtype=np.float32))
+            failure_history.append(np.asarray([
+                float(aid in failed) for aid in env.agent_ids
+            ], dtype=np.float32))
             disagreements = [
                 aid for aid in env.agent_ids
                 if observed_actions[aid] != temporal_actions[aid]
@@ -169,6 +230,48 @@ def main():
                 )
             elif args.control_source == "temporal":
                 actions = temporal_actions
+            elif args.control_source == "risk_model":
+                risk_probability = 0.0
+                risk_aux_qmean = None
+                risk_active = False
+                if failed and len(semantic_history) >= args.risk_history:
+                    risk_sequence = torch.from_numpy(np.asarray(
+                        semantic_history[-args.risk_history:],
+                        dtype=np.float32,
+                    )[None]).to(risk_device)
+                    risk_failures = torch.from_numpy(np.asarray(
+                        failure_history[-args.risk_history:],
+                        dtype=np.float32,
+                    )[None]).to(risk_device)
+                    risk_adjacency = torch.from_numpy(
+                        np.asarray(adjacency, dtype=np.float32)
+                    ).to(risk_device)
+                    with torch.no_grad():
+                        logits, _, auxiliary = risk_model.predict_targets(
+                            risk_sequence,
+                            risk_failures,
+                            risk_adjacency,
+                        )
+                        risk_probability = float(
+                            torch.sigmoid(logits)[0].item()
+                        )
+                        if (
+                            risk_aux_mean is not None
+                            and risk_aux_std is not None
+                        ):
+                            auxiliary = (
+                                auxiliary[0] * risk_aux_std + risk_aux_mean
+                            )
+                            risk_aux_qmean = float(auxiliary[0].item())
+                    risk_active = risk_probability >= args.risk_threshold
+                    if args.risk_aux_qmean_threshold is not None:
+                        risk_active = (
+                            risk_active
+                            and risk_aux_qmean is not None
+                            and risk_aux_qmean
+                            >= args.risk_aux_qmean_threshold
+                        )
+                actions = temporal_actions if risk_active else observed_actions
             else:
                 actions = observed_actions
             next_observations, rewards, terminated, truncated, _ = (
@@ -189,15 +292,13 @@ def main():
                 "throughput": step_metrics["throughput"],
                 "shield_active": shield_active,
                 **({
+                    "risk_probability": risk_probability,
+                    "risk_aux_qmean": risk_aux_qmean,
+                    "risk_active": risk_active,
+                } if args.control_source == "risk_model" else {}),
+                **({
                     "semantic_tokens": {
-                        aid: semantic_lane_tokens(
-                            observations[aid],
-                            observation_masks[aid],
-                            env.phase_lane_matrix[aid],
-                            structure_context[aid][
-                                :env.max_incoming_lanes
-                            ],
-                        ).tolist()
+                        aid: current_semantic_tokens[aid].tolist()
                         for aid in env.agent_ids
                     }
                 } if args.include_semantic_tokens else {}),
