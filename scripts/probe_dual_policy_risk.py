@@ -381,13 +381,17 @@ def main():
             elif args.control_source == "graph_benefit":
                 benefit_probability = 0.0
                 benefit_triggered = False
-                if failed and len(semantic_history) >= args.benefit_history:
+                if failed and len(semantic_history) > args.benefit_history:
                     benefit_sequence = torch.from_numpy(np.asarray(
-                        semantic_history[-args.benefit_history:],
+                        semantic_history[
+                            -args.benefit_history - 1:-1
+                        ],
                         dtype=np.float32,
                     )[None]).to(risk_device)
                     benefit_failures = torch.from_numpy(np.asarray(
-                        failure_history[-args.benefit_history:],
+                        failure_history[
+                            -args.benefit_history - 1:-1
+                        ],
                         dtype=np.float32,
                     )[None]).to(risk_device)
                     benefit_adjacency = torch.from_numpy(
@@ -395,8 +399,8 @@ def main():
                     ).to(risk_device)
                     context = build_context_features(
                         decision_history,
-                        len(decision_history) - args.benefit_history,
-                        len(decision_history),
+                        len(decision_history) - args.benefit_history - 1,
+                        len(decision_history) - 1,
                         list(env.agent_ids),
                     )
                     context_tensor = torch.from_numpy(context[None]).to(
