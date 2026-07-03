@@ -725,3 +725,135 @@ decision boundary for intervention usefulness.
    - negative if it is worse than observed or catastrophic.
 3. Train a lightweight benefit classifier and compare its selected switch
    decisions with risk-only gates.
+
+## 2026-07-03: First intervention-benefit dataset and classifier
+
+### Goal
+
+Convert fixed-step intervention outcomes into a supervised dataset for learning
+whether switching to temporal fallback at a candidate state is beneficial.
+
+This is the first concrete step from risk prediction toward counterfactual
+intervention-benefit prediction.
+
+### Dataset builder
+
+Added:
+
+- `scripts/build_intervention_benefit_dataset.py`
+
+Inputs:
+
+- observed semantic traces:
+  `results/oracle_recoverability/semantic_risk_batch_*.json`;
+- fixed-step intervention outcomes:
+  - `fixed_temporal_start_*_bad4.json`;
+  - `fixed_temporal_seed62000_start_*.json`;
+  - `fixed_temporal_seed62016_start_*.json`;
+  - `fixed_temporal_start_*_normal4.json`.
+
+Command:
+
+```bash
+python scripts/build_intervention_benefit_dataset.py \
+  --semantic_inputs 'results/oracle_recoverability/semantic_risk_batch_*.json' \
+  --intervention_inputs \
+    'results/oracle_recoverability/fixed_temporal_start_*_bad4.json' \
+    'results/oracle_recoverability/fixed_temporal_seed62000_start_*.json' \
+    'results/oracle_recoverability/fixed_temporal_seed62016_start_*.json' \
+    'results/oracle_recoverability/fixed_temporal_start_*_normal4.json' \
+  --output results/oracle_recoverability/intervention_benefit_v1.npz \
+  --history 60 \
+  --observed_totals \
+    62000:365255,62005:350335,62009:362575,62016:370915,\
+62001:189435,62002:182580,62003:188810,62004:185095 \
+  --rescue_threshold 250000 \
+  --min_improvement 0
+```
+
+Dataset:
+
+- samples: `54`
+- shape: `(54, 60, 3, 8, 12)`
+- positive rate: `0.3519`
+
+Per-seed distribution:
+
+| Seed | Samples | Positives | Notes |
+|---:|---:|---:|---|
+| 62000 | 11 | 5 | includes unsafe 60/75 windows |
+| 62001 | 4 | 0 | normal seed; includes harmful 120 switch |
+| 62002 | 4 | 0 | normal seed |
+| 62003 | 4 | 0 | normal seed |
+| 62004 | 4 | 0 | normal seed |
+| 62005 | 8 | 4 | bad seed with broad rescue window |
+| 62009 | 8 | 5 | bad seed with broad rescue window |
+| 62016 | 11 | 5 | includes sharp 210/225 cliff |
+
+Important labeled negatives:
+
+- `62000@60`, `62000@75`: catastrophic harmful switches.
+- `62016@225`, `62016@240`: catastrophic harmful switches.
+- `62001@120`: normal-seed collateral-damage switch.
+
+### First benefit classifier
+
+Added:
+
+- `scripts/train_intervention_benefit.py`
+
+Command:
+
+```bash
+python scripts/train_intervention_benefit.py \
+  --dataset results/oracle_recoverability/intervention_benefit_v1.npz \
+  --output results/oracle_recoverability/intervention_benefit_model_v1.pth \
+  --validation_seeds 62016,62001 \
+  --epochs 100 \
+  --hidden_dim 32 \
+  --batch_size 16 \
+  --gpus 0
+```
+
+Validation split:
+
+- `62016`: key bad seed with sharp safe/unsafe cliff.
+- `62001`: normal seed with collateral-damage negative.
+
+Result:
+
+| Epoch | Val AUC | Val AP | Val F1@0.5 | Mean prob |
+|---:|---:|---:|---:|---:|
+| 1 | 0.5200 | 0.4467 | 0.0000 | 0.4342 |
+| 50 | 0.2400 | 0.2674 | 0.2000 | 0.4974 |
+| 100 | 0.3400 | 0.2942 | 0.3077 | 0.5171 |
+
+### Interpretation
+
+The first benefit classifier is not usable yet.
+
+Likely causes:
+
+1. Dataset is very small (`54` samples).
+2. Holding out `62016` is a hard generalization test because its cliff
+   (`210 -> 225`) is not well represented by other seeds.
+3. The model sees semantic history but not an explicit candidate switch-time
+   feature or engineered phase-compatibility feature.
+4. Labels are episode-level outcomes assigned to a single switch point, so the
+   sample is high variance.
+
+This is still useful because it tells us the next algorithmic requirement:
+
+> Benefit prediction needs more counterfactual coverage and explicit
+> switch-state/phase compatibility modeling.
+
+### Next planned experiments
+
+1. Expand fixed-step sweeps to more normal and bad seeds to increase benefit
+   sample count.
+2. Add explicit candidate-step/time and phase-compatibility features to the
+   benefit model.
+3. Consider a pairwise/ranking objective:
+   - for the same seed, rank safe switch steps above unsafe switch steps;
+   - this may be more sample-efficient than binary classification.
+4. Only then re-test learned benefit-gated control.
