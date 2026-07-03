@@ -127,10 +127,15 @@ def main():
     queues = []
     throughputs = []
     paths = []
+    seen = set()
 
     for item in interventions:
         seed = item["seed"]
         start_step = item["start_step"]
+        key = (seed, start_step)
+        if key in seen:
+            continue
+        seen.add(key)
         if seed not in observed_totals or seed not in traces:
             continue
         trace = traces[seed]
