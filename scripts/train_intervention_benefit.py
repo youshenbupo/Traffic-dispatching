@@ -101,16 +101,32 @@ def main():
     labels = torch.from_numpy(data["labels"].astype(np.float32))
     adjacency = torch.from_numpy(data["adjacency"].astype(np.float32)).to(device)
     start_steps = torch.from_numpy(data["start_steps"].astype(np.float32))
+    context_features = None
+    context_mean = None
+    context_std = None
+    if "context_features" in data.files:
+        context_features = torch.from_numpy(
+            data["context_features"].astype(np.float32)
+        )
     validation_seeds = parse_seeds(args.validation_seeds)
     train_indices = np.flatnonzero(~np.isin(data["seeds"], validation_seeds))
     validation_indices = np.flatnonzero(np.isin(data["seeds"], validation_seeds))
     if len(train_indices) == 0 or len(validation_indices) == 0:
         raise ValueError("Need non-empty train and validation splits")
+    if context_features is not None:
+        context_mean = context_features[train_indices].mean(dim=0)
+        context_std = context_features[train_indices].std(dim=0).clamp(
+            min=1e-6
+        )
+        context_features = (context_features - context_mean) / context_std
 
     if args.model_type == "graph":
         model = GraphInterventionBenefitPredictor(
             token_dim=sequences.shape[-1],
             hidden_dim=args.hidden_dim,
+            context_dim=(
+                0 if context_features is None else context_features.shape[-1]
+            ),
         ).to(device)
     else:
         model = SemanticSpillbackPredictor(
@@ -139,6 +155,9 @@ def main():
                     failure_masks[indices].to(device),
                     adjacency,
                     start_steps[indices].to(device),
+                    None if context_features is None else (
+                        context_features[indices].to(device)
+                    ),
                 )
             else:
                 logits, _ = model(
@@ -164,6 +183,9 @@ def main():
                     failure_masks[validation_indices].to(device),
                     adjacency,
                     start_steps[validation_indices].to(device),
+                    None if context_features is None else (
+                        context_features[validation_indices].to(device)
+                    ),
                 )
             else:
                 val_logits, _ = model(
@@ -194,6 +216,19 @@ def main():
         "token_dim": sequences.shape[-1],
         "hidden_dim": args.hidden_dim,
         "model_type": args.model_type,
+        "context_dim": (
+            0 if context_features is None else context_features.shape[-1]
+        ),
+        "context_mean": (
+            None if context_mean is None else context_mean.tolist()
+        ),
+        "context_std": (
+            None if context_std is None else context_std.tolist()
+        ),
+        "context_feature_names": (
+            None if "context_feature_names" not in data.files
+            else data["context_feature_names"].tolist()
+        ),
         "validation_seeds": validation_seeds.tolist(),
         "agent_order": data["agent_order"].tolist(),
     }, args.output)

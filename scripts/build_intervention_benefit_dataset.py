@@ -82,6 +82,81 @@ def load_interventions(patterns):
     return interventions
 
 
+CONTEXT_FEATURE_NAMES = [
+    "failure_fraction_current",
+    "failure_fraction_history",
+    "disagreement_fraction_current",
+    "disagreement_fraction_history",
+    "queue_mean_current",
+    "queue_max_current",
+    "active_service_queue_mean",
+    "inactive_service_queue_mean",
+    "active_service_fraction",
+    "unserved_queue_pressure",
+    "queue_mean_growth",
+]
+
+
+def masked_mean(values, mask):
+    total = float(mask.sum())
+    if total <= 0.0:
+        return 0.0
+    return float((values * mask).sum() / total)
+
+
+def build_context_features(trace, begin, end, agent_order):
+    """Summarize switch-state compatibility cues at the candidate step."""
+    window = trace[begin:end]
+    current = window[-1]
+    agent_count = max(len(agent_order), 1)
+
+    current_failed = len(current.get("failed_agents", [])) / agent_count
+    history_failed = float(np.mean([
+        len(step.get("failed_agents", [])) / agent_count
+        for step in window
+    ]))
+    current_disagreement = (
+        len(current.get("disagreement_agents", [])) / agent_count
+    )
+    history_disagreement = float(np.mean([
+        len(step.get("disagreement_agents", [])) / agent_count
+        for step in window
+    ]))
+
+    current_tokens = np.asarray([
+        current["semantic_tokens"][aid] for aid in agent_order
+    ], dtype=np.float32)
+    first_tokens = np.asarray([
+        window[0]["semantic_tokens"][aid] for aid in agent_order
+    ], dtype=np.float32)
+    queue = current_tokens[..., 0]
+    first_queue = first_tokens[..., 0]
+    lane_presence = current_tokens[..., -1].clip(0.0, 1.0)
+    active_service = current_tokens[..., -2].clip(0.0, 1.0)
+    active_mask = lane_presence * (active_service > 0.5)
+    inactive_mask = lane_presence * (active_service <= 0.5)
+
+    queue_mean = masked_mean(queue, lane_presence)
+    queue_max = float((queue * lane_presence).max())
+    active_queue = masked_mean(queue, active_mask)
+    inactive_queue = masked_mean(queue, inactive_mask)
+    active_fraction = masked_mean(active_service, lane_presence)
+    first_queue_mean = masked_mean(first_queue, lane_presence)
+    return np.asarray([
+        current_failed,
+        history_failed,
+        current_disagreement,
+        history_disagreement,
+        queue_mean,
+        queue_max,
+        active_queue,
+        inactive_queue,
+        active_fraction,
+        inactive_queue - active_queue,
+        queue_mean - first_queue_mean,
+    ], dtype=np.float32)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--semantic_inputs", nargs="+", required=True)
@@ -126,6 +201,7 @@ def main():
     totals = []
     queues = []
     throughputs = []
+    context_features = []
     paths = []
     seen = set()
 
@@ -170,6 +246,9 @@ def main():
         totals.append(item["total_time_spent"])
         queues.append(item["queue_length"])
         throughputs.append(item["throughput"])
+        context_features.append(
+            build_context_features(trace, begin, end, agent_order)
+        )
         paths.append(os.path.basename(item["path"]))
 
     if not sequences:
@@ -192,6 +271,8 @@ def main():
         total_time_spent=np.asarray(totals, dtype=np.float32),
         queue_length=np.asarray(queues, dtype=np.float32),
         throughput=np.asarray(throughputs, dtype=np.float32),
+        context_features=np.asarray(context_features, dtype=np.float32),
+        context_feature_names=np.asarray(CONTEXT_FEATURE_NAMES),
         source_files=np.asarray(paths),
         agent_order=np.asarray(agent_order),
         adjacency=adjacency,

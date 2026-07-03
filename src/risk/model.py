@@ -117,11 +117,13 @@ class GraphInterventionBenefitPredictor(nn.Module):
         self,
         token_dim: int,
         hidden_dim: int = 64,
+        context_dim: int = 0,
         dropout: float = 0.1,
         max_step: float = 720.0,
     ):
         super().__init__()
         self.max_step = float(max_step)
+        self.context_dim = int(context_dim)
         self.lane_encoder = nn.Sequential(
             nn.Linear(token_dim, hidden_dim),
             nn.ReLU(),
@@ -152,8 +154,20 @@ class GraphInterventionBenefitPredictor(nn.Module):
             nn.ReLU(),
             nn.Dropout(dropout),
         )
+        if self.context_dim > 0:
+            self.context_encoder = nn.Sequential(
+                nn.Linear(self.context_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.ReLU(),
+            )
+            head_input_dim = 3 * hidden_dim
+        else:
+            self.context_encoder = None
+            head_input_dim = 2 * hidden_dim
         self.benefit_head = nn.Sequential(
-            nn.Linear(2 * hidden_dim, hidden_dim),
+            nn.Linear(head_input_dim, hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, 1),
@@ -210,6 +224,7 @@ class GraphInterventionBenefitPredictor(nn.Module):
         failure_masks: torch.Tensor,
         adjacency: torch.Tensor,
         start_steps: torch.Tensor,
+        context_features: torch.Tensor = None,
     ) -> torch.Tensor:
         nodes = self.encode_nodes(sequences, failure_masks, start_steps)
         graph = self._normalized_adjacency(adjacency).to(nodes.device)
@@ -223,6 +238,18 @@ class GraphInterventionBenefitPredictor(nn.Module):
             nodes.max(dim=1).values,
             nodes.mean(dim=1),
         ], dim=-1)
+        if self.context_encoder is not None:
+            if context_features is None:
+                context_features = torch.zeros(
+                    pooled.shape[0],
+                    self.context_dim,
+                    device=pooled.device,
+                    dtype=pooled.dtype,
+                )
+            context_embedding = self.context_encoder(
+                context_features.to(pooled.device).float()
+            )
+            pooled = torch.cat([pooled, context_embedding], dim=-1)
         return self.benefit_head(pooled).squeeze(-1)
 
 
