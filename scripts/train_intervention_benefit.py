@@ -12,7 +12,10 @@ sys.path.insert(
     0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
 
-from src.risk import SemanticSpillbackPredictor
+from src.risk import (
+    GraphInterventionBenefitPredictor,
+    SemanticSpillbackPredictor,
+)
 
 
 def roc_auc_score(labels, scores):
@@ -73,6 +76,11 @@ def main():
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--validation_seeds", required=True)
+    parser.add_argument(
+        "--model_type",
+        choices=("temporal", "graph"),
+        default="temporal",
+    )
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--hidden_dim", type=int, default=32)
     parser.add_argument("--batch_size", type=int, default=16)
@@ -92,16 +100,23 @@ def main():
     failure_masks = torch.from_numpy(data["failure_masks"])
     labels = torch.from_numpy(data["labels"].astype(np.float32))
     adjacency = torch.from_numpy(data["adjacency"].astype(np.float32)).to(device)
+    start_steps = torch.from_numpy(data["start_steps"].astype(np.float32))
     validation_seeds = parse_seeds(args.validation_seeds)
     train_indices = np.flatnonzero(~np.isin(data["seeds"], validation_seeds))
     validation_indices = np.flatnonzero(np.isin(data["seeds"], validation_seeds))
     if len(train_indices) == 0 or len(validation_indices) == 0:
         raise ValueError("Need non-empty train and validation splits")
 
-    model = SemanticSpillbackPredictor(
-        token_dim=sequences.shape[-1],
-        hidden_dim=args.hidden_dim,
-    ).to(device)
+    if args.model_type == "graph":
+        model = GraphInterventionBenefitPredictor(
+            token_dim=sequences.shape[-1],
+            hidden_dim=args.hidden_dim,
+        ).to(device)
+    else:
+        model = SemanticSpillbackPredictor(
+            token_dim=sequences.shape[-1],
+            hidden_dim=args.hidden_dim,
+        ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.learning_rate)
     positives = labels[train_indices].sum().item()
     negatives = len(train_indices) - positives
@@ -118,11 +133,19 @@ def main():
         losses = []
         for start in range(0, len(order), args.batch_size):
             indices = order[start:start + args.batch_size]
-            logits, _ = model(
-                sequences[indices].to(device),
-                failure_masks[indices].to(device),
-                adjacency,
-            )
+            if args.model_type == "graph":
+                logits = model(
+                    sequences[indices].to(device),
+                    failure_masks[indices].to(device),
+                    adjacency,
+                    start_steps[indices].to(device),
+                )
+            else:
+                logits, _ = model(
+                    sequences[indices].to(device),
+                    failure_masks[indices].to(device),
+                    adjacency,
+                )
             loss = F.binary_cross_entropy_with_logits(
                 logits,
                 labels[indices].to(device),
@@ -135,11 +158,19 @@ def main():
 
         model.eval()
         with torch.no_grad():
-            val_logits, _ = model(
-                sequences[validation_indices].to(device),
-                failure_masks[validation_indices].to(device),
-                adjacency,
-            )
+            if args.model_type == "graph":
+                val_logits = model(
+                    sequences[validation_indices].to(device),
+                    failure_masks[validation_indices].to(device),
+                    adjacency,
+                    start_steps[validation_indices].to(device),
+                )
+            else:
+                val_logits, _ = model(
+                    sequences[validation_indices].to(device),
+                    failure_masks[validation_indices].to(device),
+                    adjacency,
+                )
             probabilities = torch.sigmoid(val_logits).cpu().numpy()
             val_labels = labels[validation_indices].numpy()
             val_loss = F.binary_cross_entropy_with_logits(
@@ -162,6 +193,7 @@ def main():
         "model": model.state_dict(),
         "token_dim": sequences.shape[-1],
         "hidden_dim": args.hidden_dim,
+        "model_type": args.model_type,
         "validation_seeds": validation_seeds.tolist(),
         "agent_order": data["agent_order"].tolist(),
     }, args.output)
