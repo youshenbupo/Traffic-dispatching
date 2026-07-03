@@ -11,12 +11,17 @@ sys.path.insert(
     0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
 
+from scripts.build_intervention_benefit_dataset import build_context_features
 from scripts.eval import make_agent, set_gpus
 from src.envs.sumo_env import SUMOMultiAgentEnv
 from src.trainers.online_trainer import _agent_act
 from src.utils.config import load_config, merge_config
 from src.utils.metrics import MetricsTracker
-from src.risk import SemanticSpillbackPredictor, semantic_lane_tokens
+from src.risk import (
+    GraphInterventionBenefitPredictor,
+    SemanticSpillbackPredictor,
+    semantic_lane_tokens,
+)
 
 
 def temporal_carry_forward(observations, observation_masks, cache):
@@ -75,6 +80,7 @@ def main():
             "temporal",
             "queue_shield",
             "risk_model",
+            "graph_benefit",
             "temporal_after_step",
         ),
         default="observed",
@@ -120,6 +126,22 @@ def main():
             "trigger. Use -1 to latch fallback for the rest of the episode."
         ),
     )
+    parser.add_argument(
+        "--benefit_model_path",
+        default=None,
+        help="Graph intervention-benefit checkpoint for graph_benefit control.",
+    )
+    parser.add_argument("--benefit_history", type=int, default=60)
+    parser.add_argument("--benefit_threshold", type=float, default=0.5)
+    parser.add_argument(
+        "--benefit_hold_steps",
+        type=int,
+        default=0,
+        help=(
+            "Keep using temporal fallback for this many steps after a graph "
+            "benefit trigger. Use -1 to latch fallback for the episode."
+        ),
+    )
     parser.add_argument("--gpus", default=None)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
@@ -139,6 +161,9 @@ def main():
     risk_model = None
     risk_aux_mean = None
     risk_aux_std = None
+    benefit_model = None
+    benefit_context_mean = None
+    benefit_context_std = None
     risk_device = torch.device(
         "cuda" if torch.cuda.is_available() else "cpu"
     )
@@ -163,6 +188,32 @@ def main():
                 dtype=torch.float32,
                 device=risk_device,
             )
+    if args.control_source == "graph_benefit":
+        if args.benefit_model_path is None:
+            raise ValueError(
+                "--benefit_model_path is required for graph_benefit"
+            )
+        checkpoint = torch.load(
+            args.benefit_model_path, map_location=risk_device
+        )
+        benefit_model = GraphInterventionBenefitPredictor(
+            token_dim=int(checkpoint["token_dim"]),
+            hidden_dim=int(checkpoint["hidden_dim"]),
+            context_dim=int(checkpoint.get("context_dim", 0) or 0),
+        ).to(risk_device)
+        benefit_model.load_state_dict(checkpoint["model"])
+        benefit_model.eval()
+        if checkpoint.get("context_mean") is not None:
+            benefit_context_mean = torch.tensor(
+                checkpoint["context_mean"],
+                dtype=torch.float32,
+                device=risk_device,
+            )
+            benefit_context_std = torch.tensor(
+                checkpoint["context_std"],
+                dtype=torch.float32,
+                device=risk_device,
+            ).clamp(min=1e-6)
     graph_cfg = config.get("dynamic_graph", {})
     graph_type = graph_cfg.get("graph_type", "static")
     neighbor_k = graph_cfg.get("neighbor_k", 1)
@@ -176,8 +227,11 @@ def main():
         queue_history = []
         semantic_history = []
         failure_history = []
+        decision_history = []
         risk_latched = False
         risk_hold_until = -1
+        benefit_latched = False
+        benefit_hold_until = -1
         shield_active = False
         done = False
         while not done:
@@ -245,6 +299,14 @@ def main():
                 if observed_actions[aid] != temporal_actions[aid]
                 and np.asarray(masks[aid]).sum() > 1
             ]
+            decision_history.append({
+                "semantic_tokens": {
+                    aid: current_semantic_tokens[aid].tolist()
+                    for aid in env.agent_ids
+                },
+                "failed_agents": failed,
+                "disagreement_agents": disagreements,
+            })
             if args.control_source == "queue_shield":
                 shield_active = shield_active or queue_shield_triggered(
                     queue_history,
@@ -316,6 +378,68 @@ def main():
                     or len(trace) <= risk_hold_until
                 )
                 actions = temporal_actions if risk_active else observed_actions
+            elif args.control_source == "graph_benefit":
+                benefit_probability = 0.0
+                benefit_triggered = False
+                if failed and len(semantic_history) >= args.benefit_history:
+                    benefit_sequence = torch.from_numpy(np.asarray(
+                        semantic_history[-args.benefit_history:],
+                        dtype=np.float32,
+                    )[None]).to(risk_device)
+                    benefit_failures = torch.from_numpy(np.asarray(
+                        failure_history[-args.benefit_history:],
+                        dtype=np.float32,
+                    )[None]).to(risk_device)
+                    benefit_adjacency = torch.from_numpy(
+                        np.asarray(adjacency, dtype=np.float32)
+                    ).to(risk_device)
+                    context = build_context_features(
+                        decision_history,
+                        len(decision_history) - args.benefit_history,
+                        len(decision_history),
+                        list(env.agent_ids),
+                    )
+                    context_tensor = torch.from_numpy(context[None]).to(
+                        risk_device
+                    )
+                    if benefit_context_mean is not None:
+                        context_tensor = (
+                            context_tensor - benefit_context_mean
+                        ) / benefit_context_std
+                    with torch.no_grad():
+                        logits = benefit_model(
+                            benefit_sequence,
+                            benefit_failures,
+                            benefit_adjacency,
+                            torch.tensor(
+                                [len(trace)],
+                                dtype=torch.float32,
+                                device=risk_device,
+                            ),
+                            context_tensor,
+                        )
+                        benefit_probability = float(
+                            torch.sigmoid(logits)[0].item()
+                        )
+                    benefit_triggered = (
+                        benefit_probability >= args.benefit_threshold
+                    )
+                if benefit_triggered:
+                    if args.benefit_hold_steps < 0:
+                        benefit_latched = True
+                    elif args.benefit_hold_steps > 0:
+                        benefit_hold_until = max(
+                            benefit_hold_until,
+                            len(trace) + args.benefit_hold_steps,
+                        )
+                benefit_active = (
+                    benefit_triggered
+                    or benefit_latched
+                    or len(trace) <= benefit_hold_until
+                )
+                actions = (
+                    temporal_actions if benefit_active else observed_actions
+                )
             else:
                 actions = observed_actions
             next_observations, rewards, terminated, truncated, _ = (
@@ -345,6 +469,11 @@ def main():
                     "risk_active": risk_active,
                     "risk_triggered": risk_triggered,
                 } if args.control_source == "risk_model" else {}),
+                **({
+                    "benefit_probability": benefit_probability,
+                    "benefit_active": benefit_active,
+                    "benefit_triggered": benefit_triggered,
+                } if args.control_source == "graph_benefit" else {}),
                 **({
                     "semantic_tokens": {
                         aid: current_semantic_tokens[aid].tolist()
