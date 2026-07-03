@@ -167,7 +167,7 @@ def main():
         token_dim=int(checkpoint["token_dim"]),
         hidden_dim=int(checkpoint["hidden_dim"]),
     ).to(device)
-    model.load_state_dict(checkpoint["model"])
+    model.load_state_dict(checkpoint["model"], strict=False)
     model.eval()
 
     probabilities = []

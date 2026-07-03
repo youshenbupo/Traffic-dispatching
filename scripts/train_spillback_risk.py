@@ -22,6 +22,15 @@ def main():
     parser.add_argument("--hidden_dim", type=int, default=64)
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--learning_rate", type=float, default=3e-4)
+    parser.add_argument(
+        "--auxiliary_weight",
+        type=float,
+        default=0.0,
+        help=(
+            "Weight for smooth-L1 prediction of future queue/vehicle "
+            "targets stored in labels[:, 1:]."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--validation_seeds",
@@ -46,6 +55,7 @@ def main():
     sequences = torch.from_numpy(data["sequences"])
     failure_masks = torch.from_numpy(data["failure_masks"])
     labels = torch.from_numpy(data["labels"][:, 0])
+    auxiliary_labels = torch.from_numpy(data["labels"][:, 1:])
     adjacency_array = (
         data["adjacency"]
         if "adjacency" in data.files
@@ -85,6 +95,10 @@ def main():
     pos_weight = torch.tensor(
         negatives / max(positives, 1.0), device=device
     )
+    auxiliary_mean = auxiliary_labels[train_indices].mean(dim=0)
+    auxiliary_std = auxiliary_labels[train_indices].std(dim=0).clamp(
+        min=1e-6
+    )
 
     generator = torch.Generator().manual_seed(args.seed)
     for epoch in range(args.epochs):
@@ -97,7 +111,7 @@ def main():
         losses = []
         for start in range(0, len(order), args.batch_size):
             indices = order[start:start + args.batch_size]
-            logits, _ = model(
+            logits, _, auxiliary_predictions = model.predict_targets(
                 sequences[indices].to(device),
                 failure_masks[indices].to(device),
                 adjacency,
@@ -107,6 +121,15 @@ def main():
                 labels[indices].to(device),
                 pos_weight=pos_weight,
             )
+            if args.auxiliary_weight > 0.0:
+                auxiliary_targets = (
+                    auxiliary_labels[indices] - auxiliary_mean
+                ) / auxiliary_std
+                auxiliary_loss = F.smooth_l1_loss(
+                    auxiliary_predictions,
+                    auxiliary_targets.to(device),
+                )
+                loss = loss + args.auxiliary_weight * auxiliary_loss
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -114,7 +137,7 @@ def main():
 
         model.eval()
         with torch.no_grad():
-            val_logits, _ = model(
+            val_logits, _, val_auxiliary_predictions = model.predict_targets(
                 sequences[validation_indices].to(device),
                 failure_masks[validation_indices].to(device),
                 adjacency,
@@ -123,10 +146,18 @@ def main():
                 val_logits,
                 labels[validation_indices].to(device),
             ).item()
+            val_auxiliary_targets = (
+                auxiliary_labels[validation_indices] - auxiliary_mean
+            ) / auxiliary_std
+            val_auxiliary_loss = F.smooth_l1_loss(
+                val_auxiliary_predictions,
+                val_auxiliary_targets.to(device),
+            ).item()
             val_probability = torch.sigmoid(val_logits)
         print(
             f"epoch={epoch + 1} train_loss={np.mean(losses):.6f} "
             f"val_loss={val_loss:.6f} "
+            f"val_aux_loss={val_auxiliary_loss:.6f} "
             f"val_probability_mean={val_probability.mean().item():.4f}"
         )
 
@@ -137,6 +168,9 @@ def main():
         "hidden_dim": args.hidden_dim,
         "validation_seed": int(validation_seeds[-1]),
         "validation_seeds": validation_seeds.tolist(),
+        "auxiliary_weight": float(args.auxiliary_weight),
+        "auxiliary_mean": auxiliary_mean.tolist(),
+        "auxiliary_std": auxiliary_std.tolist(),
         "agent_order": data["agent_order"].tolist(),
     }, args.output)
 

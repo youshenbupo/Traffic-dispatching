@@ -31,6 +31,7 @@ class SemanticSpillbackPredictor(nn.Module):
             hidden_dim, hidden_dim, batch_first=True
         )
         self.risk_head = nn.Linear(hidden_dim, 1)
+        self.auxiliary_head = nn.Linear(hidden_dim, 4)
 
     def encode(
         self,
@@ -86,6 +87,20 @@ class SemanticSpillbackPredictor(nn.Module):
         per_agent_logits = self.risk_head(embeddings).squeeze(-1)
         network_logits = per_agent_logits.max(dim=-1).values
         return network_logits, per_agent_logits
+
+    def predict_targets(
+        self,
+        sequences: torch.Tensor,
+        failure_masks: torch.Tensor,
+        adjacency: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Predict binary risk and normalized continuous future targets."""
+        embeddings = self.encode(sequences, failure_masks, adjacency)
+        per_agent_logits = self.risk_head(embeddings).squeeze(-1)
+        network_logits = per_agent_logits.max(dim=-1).values
+        network_embedding = embeddings.max(dim=1).values
+        auxiliary_targets = self.auxiliary_head(network_embedding)
+        return network_logits, per_agent_logits, auxiliary_targets
 
 
 def risk_gated_logits(
