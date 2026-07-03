@@ -1000,3 +1000,218 @@ This supports the evolving method:
    - `62001@120`;
    - `62000@60/75`;
    - `62016@210/225` boundary.
+
+## 2026-07-03: Graph Benefit Gate v2/v3 with switch-context features
+
+### Goal
+
+Continue the GNN direction by adding explicit switch-state context features.
+Graph Benefit Gate v1 showed that topology helps, but it still misclassified
+important phase/action-incompatible interventions:
+
+- `62001@120`;
+- `62000@60/75`;
+- the `62016@210/225` boundary.
+
+The hypothesis was that the model needs more than graph topology; it also needs
+features describing whether the candidate switch point is compatible with the
+current traffic/failure/action state.
+
+### Code changes
+
+Added context features to `scripts/build_intervention_benefit_dataset.py`:
+
+- current failure fraction;
+- historical failure fraction;
+- current observed-vs-temporal disagreement fraction;
+- historical disagreement fraction;
+- current queue mean/max;
+- queue on lanes currently served by the active phase;
+- queue on lanes not currently served;
+- active service fraction;
+- unserved queue pressure;
+- queue mean growth over the history window.
+
+Updated `GraphInterventionBenefitPredictor` to accept these context features in
+addition to:
+
+- lane semantic history;
+- failure history;
+- candidate switch step;
+- graph adjacency.
+
+Commit:
+
+- `45d446d` — add context features for graph benefit gate.
+
+### Graph Benefit Gate v2: same 54-sample dataset with context
+
+Dataset:
+
+- `results/oracle_recoverability/intervention_benefit_v2_context.npz`
+- samples: `54`
+- positive rate: `0.3519`
+
+Command:
+
+```bash
+python scripts/train_intervention_benefit.py \
+  --dataset results/oracle_recoverability/intervention_benefit_v2_context.npz \
+  --output results/oracle_recoverability/intervention_benefit_graph_v2_context.pth \
+  --validation_seeds 62016,62001 \
+  --model_type graph \
+  --epochs 100 \
+  --hidden_dim 32 \
+  --batch_size 16 \
+  --gpus 0
+```
+
+Result:
+
+- epoch 1: AUC `0.8600`, AP `0.6595`, but all probabilities below 0.5.
+- epoch 100: AUC `0.5600`, AP `0.4119`, F1@0.5 `0.6250`.
+
+Interpretation:
+
+Context features can help identify useful structure, but with only 54 samples
+they are easy to overfit. The final model fixed `62000@60/75`, but generalized
+poorly to held-out `62016` and `62001`.
+
+### Normal12 collateral-damage expansion
+
+To increase negative coverage, ran fixed-step temporal interventions on the
+remaining 12 normal seeds:
+
+```bash
+python scripts/probe_dual_policy_risk.py \
+  --config configs/mappo_cologne3_eval.yaml \
+  --model_path logs/selected_teachers_mature/cologne3 \
+  --seeds 62006,62007,62008,62010,62011,62012,62013,62014,62015,62017,62018,62019 \
+  --control_source temporal_after_step \
+  --temporal_start_step <120|180|240|300> \
+  --gpus 3 \
+  --output results/oracle_recoverability/fixed_temporal_start_<STEP>_normal12.json
+```
+
+Summary files:
+
+- `results/oracle_recoverability/fixed_temporal_normal12_summary.csv`
+- `results/oracle_recoverability/fixed_temporal_normal12_summary.json`
+
+Results:
+
+| Seed | step 120 | step 180 | step 240 | step 300 |
+|---:|---:|---:|---:|---:|
+| 62006 | 192210 | 191830 | 196765 | 193790 |
+| 62007 | 477170 | 439955 | 206305 | 196230 |
+| 62008 | 205865 | 199230 | 381595 | 350140 |
+| 62010 | 201675 | 199135 | 198295 | 194345 |
+| 62011 | 189280 | 199000 | 196540 | 369335 |
+| 62012 | 203440 | 200415 | 199715 | 194620 |
+| 62013 | 191845 | 954360 | 204340 | 195095 |
+| 62014 | 195330 | 200165 | 198490 | 193685 |
+| 62015 | 203380 | 366030 | 193555 | 195735 |
+| 62017 | 190670 | 359040 | 195445 | 194640 |
+| 62018 | 201335 | 193510 | 198770 | 194060 |
+| 62019 | 196525 | 481740 | 196190 | 195090 |
+
+Step-level summary:
+
+| Step | Mean total | Mean delta vs observed | Max delta | Catastrophic count >300k |
+|---:|---:|---:|---:|---:|
+| 120 | 220727 | +33453 | +290240 | 1 |
+| 180 | 332034 | +144760 | +765460 | 5 |
+| 240 | 213834 | +26559 | +190020 | 1 |
+| 300 | 222230 | +34956 | +181600 | 2 |
+
+Interpretation:
+
+Fixed temporal switching can seriously damage normal seeds. Step 180 is
+especially dangerous in this cohort, with 5/12 catastrophic normal-seed
+failures. This provides the missing negative coverage for learning a safer gate.
+
+### Graph Benefit Gate v3: context + normal12 expansion
+
+Dataset:
+
+- `results/oracle_recoverability/intervention_benefit_v3_context_normal12.npz`
+- samples: `102`
+- positive rate: `0.1863`
+
+Command:
+
+```bash
+python scripts/train_intervention_benefit.py \
+  --dataset results/oracle_recoverability/intervention_benefit_v3_context_normal12.npz \
+  --output results/oracle_recoverability/intervention_benefit_graph_v3_context_e100.pth \
+  --validation_seeds 62016,62001 \
+  --model_type graph \
+  --epochs 100 \
+  --hidden_dim 32 \
+  --batch_size 16 \
+  --gpus 3
+```
+
+Validation results:
+
+| Epoch | Val AUC | Val AP | Val F1@0.5 |
+|---:|---:|---:|---:|
+| 20 | 0.9400 | 0.9250 | 0.0000 |
+| 70 | 0.8200 | 0.7742 | 0.7273 |
+| 90 | 0.9200 | 0.9111 | 0.7500 |
+| 100 | 0.9400 | 0.9250 | 0.8889 |
+
+This is the best benefit model so far.
+
+### Sample-level diagnosis for v3
+
+Key held-out samples:
+
+| Sample | Label | Benefit | Probability | Diagnosis |
+|---|---:|---:|---:|---|
+| `62016@210` | 1 | +183470 | 0.521 | correct, but close |
+| `62016@225` | 0 | -339885 | 0.322 | fixed |
+| `62016@240` | 0 | -325750 | 0.287 | fixed |
+| `62001@120` | 0 | -187045 | 0.035 | fixed |
+
+Key previous false positives:
+
+| Sample | Label | Benefit | Probability | Diagnosis |
+|---|---:|---:|---:|---|
+| `62000@60` | 0 | -665710 | 0.024 | fixed |
+| `62000@75` | 0 | -665710 | 0.004 | fixed |
+| `62000@90` | 1 | +166625 | 0.945 | correct |
+| `62000@105` | 1 | +167385 | 0.897 | correct |
+
+Remaining issues:
+
+- `62016@195` is a false negative at threshold 0.5 (`0.190`) despite being
+  beneficial.
+- Some minor-harm normal interventions still receive high probabilities, e.g.
+  `62019@120` has probability `0.847` but only modest harm (`-11660`).
+
+### Interpretation
+
+Adding normal12 negative coverage and switch-context features materially
+improved the graph benefit model:
+
+```text
+Temporal benefit classifier: AUC 0.34
+Graph Benefit Gate v1:      AUC 0.86
+Graph Benefit Gate v3:      AUC 0.94, AP 0.925, F1@0.5 0.889
+```
+
+The model now correctly handles the main catastrophic cases that motivated the
+method. Remaining mistakes are mostly threshold/calibration or minor-harm cases,
+suggesting the next step should distinguish catastrophic harm from small
+performance loss.
+
+### Next planned experiments
+
+1. Add benefit magnitude/regression or weighted classification:
+   - severe negatives such as `62013@180` and `62000@60` should matter more
+     than minor negatives such as `62019@120`.
+2. Evaluate learned Graph Benefit Gate v3 as an actual control gate, not only
+   as an offline classifier.
+3. Calibrate a threshold that prioritizes avoiding catastrophic false positives
+   while still rescuing bad seeds.
