@@ -153,7 +153,12 @@ def main():
 
     eval_seeds = parse_seed_list(args.eval_seeds)
     if eval_seeds is None:
-        eval_seeds = [int(checkpoint.get("validation_seed", np.unique(seeds)[-1]))]
+        if "validation_seeds" in checkpoint:
+            eval_seeds = [int(seed) for seed in checkpoint["validation_seeds"]]
+        else:
+            eval_seeds = [
+                int(checkpoint.get("validation_seed", np.unique(seeds)[-1]))
+            ]
     eval_indices = np.flatnonzero(np.isin(seeds, np.asarray(eval_seeds)))
     if len(eval_indices) == 0:
         raise ValueError(f"No samples found for eval seeds: {eval_seeds}")

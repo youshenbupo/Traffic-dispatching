@@ -23,6 +23,14 @@ def main():
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--learning_rate", type=float, default=3e-4)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--validation_seeds",
+        default=None,
+        help=(
+            "Comma-separated episode seeds held out for validation. "
+            "Defaults to the last seed in the dataset."
+        ),
+    )
     parser.add_argument("--gpus", default=None)
     args = parser.parse_args()
 
@@ -48,9 +56,20 @@ def main():
     )
     adjacency = torch.from_numpy(adjacency_array).to(device)
     unique_seeds = np.unique(data["seeds"])
-    validation_seed = unique_seeds[-1]
-    train_indices = np.flatnonzero(data["seeds"] != validation_seed)
-    validation_indices = np.flatnonzero(data["seeds"] == validation_seed)
+    if args.validation_seeds:
+        validation_seeds = np.asarray([
+            int(item)
+            for item in args.validation_seeds.split(",")
+            if item.strip()
+        ], dtype=np.int64)
+    else:
+        validation_seeds = np.asarray([unique_seeds[-1]], dtype=np.int64)
+    train_indices = np.flatnonzero(
+        ~np.isin(data["seeds"], validation_seeds)
+    )
+    validation_indices = np.flatnonzero(
+        np.isin(data["seeds"], validation_seeds)
+    )
     if len(train_indices) == 0 or len(validation_indices) == 0:
         raise ValueError("Dataset needs at least two episode seeds")
 
@@ -116,7 +135,8 @@ def main():
         "model": model.state_dict(),
         "token_dim": sequences.shape[-1],
         "hidden_dim": args.hidden_dim,
-        "validation_seed": int(validation_seed),
+        "validation_seed": int(validation_seeds[-1]),
+        "validation_seeds": validation_seeds.tolist(),
         "agent_order": data["agent_order"].tolist(),
     }, args.output)
 
