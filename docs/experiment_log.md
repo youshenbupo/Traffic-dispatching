@@ -394,3 +394,119 @@ Instead of training only a spillback-risk predictor, train a gate to estimate:
 
 5. Only after benefit gate shows signal, expand to more seeds/maps.
 
+## 2026-07-03: Fixed-step temporal intervention timing sweep
+
+### Goal
+
+Test the hypothesis that the previous risk gates failed because they switched
+to temporal fallback at the wrong time or for the wrong duration. Instead of
+using a learned gate, force a switch from observed actions to temporal fallback
+at fixed episode steps and measure the counterfactual intervention outcome.
+
+This experiment directly estimates the intervention window needed for a future
+benefit-gate label.
+
+### Code change
+
+Added `temporal_after_step` to `scripts/probe_dual_policy_risk.py`.
+
+Behavior:
+
+- before `--temporal_start_step`: use observed actions;
+- at/after `--temporal_start_step`: use temporal fallback actions;
+- record `temporal_active` and `temporal_start_step` in the trace.
+
+Commit:
+
+- `832b331` — add fixed-step temporal intervention probe.
+
+### Experiment command
+
+For each start step in `0, 60, 120, 180, 240, 300, 360, 420, 480`:
+
+```bash
+python scripts/probe_dual_policy_risk.py \
+  --config configs/mappo_cologne3_eval.yaml \
+  --model_path logs/selected_teachers_mature/cologne3 \
+  --seeds 62000,62005,62009,62016 \
+  --control_source temporal_after_step \
+  --temporal_start_step <STEP> \
+  --gpus 0 \
+  --output results/oracle_recoverability/fixed_temporal_start_<STEP>_bad4.json
+```
+
+Summary files:
+
+- `results/oracle_recoverability/fixed_temporal_bad4_summary.csv`
+- `results/oracle_recoverability/fixed_temporal_bad4_summary.json`
+
+### Results
+
+Total time spent:
+
+| Seed | observed | temporal-only / step 0 | step 60 | step 120 | step 180 | step 240 | step 300 | step 360 | step 420 | step 480 |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 62000 | 365255 | 209425 | 1030965 | 200145 | 197950 | 204385 | 346315 | 367745 | 367290 | 367515 |
+| 62005 | 350335 | 193670 | 369710 | 196205 | 200095 | 204030 | 197985 | 359505 | 354005 | 352615 |
+| 62009 | 362575 | 193065 | 186275 | 204065 | 200245 | 197330 | 189945 | 361455 | 363325 | 364155 |
+| 62016 | 370915 | 191040 | 200220 | 189275 | 191510 | 696665 | 516680 | 452560 | 428350 | 412585 |
+
+Using `total_time_spent <= 250000` as a rough rescued threshold:
+
+| Seed | Best start step | Best total time | Latest rescued start step |
+|---:|---:|---:|---:|
+| 62000 | 180 | 197950 | 240 |
+| 62005 | 0 | 193670 | 300 |
+| 62009 | 60 | 186275 | 300 |
+| 62016 | 120 | 189275 | 180 |
+
+### Interpretation
+
+The intervention window is real and strongly state-dependent.
+
+Key observations:
+
+1. `temporal-only` rescues all four bad seeds, confirming that temporal fallback
+   is a useful intervention.
+2. Switching too late fails:
+   - `62016` is no longer rescued at step 240 and becomes catastrophic
+     (`696665`).
+   - `62000/62005/62009` mostly fail by step 360.
+3. Switching at a bad intermediate moment can be worse than both baselines:
+   - `62000` at step 60 becomes `1030965`, far worse than observed and
+     temporal-only.
+   - `62005` at step 60 also fails (`369710`).
+4. Safe switch timing is not monotonic:
+   - `62000` fails at step 60 but succeeds at steps 120/180/240.
+   - This suggests phase/state compatibility matters, not merely “earlier is
+     better.”
+
+### Research implication
+
+This supports a stronger paper direction:
+
+> The control problem is a counterfactual intervention-timing problem, not a
+> pure risk-detection problem.
+
+A future gate should predict intervention benefit:
+
+```text
+benefit(s_t, t) =
+  future_cost(observed from t) - future_cost(temporal fallback from t)
+```
+
+This benefit can be non-monotonic in time, so a useful model must learn both:
+
+- whether the scene is at risk;
+- whether switching now is safe/useful.
+
+### Next planned experiments
+
+1. Refine the timing sweep around critical windows:
+   - `62000`: steps `30, 45, 60, 75, 90, 105, 120`.
+   - `62016`: steps `180, 195, 210, 225, 240`.
+2. Run fixed-step sweep on normal seeds to check whether temporal intervention
+   harms otherwise healthy episodes.
+3. Build a counterfactual benefit dataset from the fixed-step traces.
+4. Train a first benefit classifier/regressor and compare it against risk-only
+   gates.
