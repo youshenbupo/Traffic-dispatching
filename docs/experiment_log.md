@@ -857,3 +857,146 @@ This is still useful because it tells us the next algorithmic requirement:
    - for the same seed, rank safe switch steps above unsafe switch steps;
    - this may be more sample-efficient than binary classification.
 4. Only then re-test learned benefit-gated control.
+
+## 2026-07-03: Graph Benefit Gate v1
+
+### Goal
+
+Test whether explicitly modeling the intersection graph improves
+counterfactual intervention-benefit prediction.
+
+Motivation:
+
+- traffic intersections are graph-structured agents;
+- a local fallback switch can affect upstream/downstream spillback;
+- previous temporal-only benefit classifier did not generalize on the hard
+  validation split.
+
+### Model
+
+Added:
+
+- `GraphInterventionBenefitPredictor` in `src/risk/model.py`.
+
+Architecture:
+
+1. lane-level semantic encoder;
+2. per-agent temporal GRU over the 60-step history;
+3. candidate switch-step embedding;
+4. two graph message-passing layers over the intersection adjacency matrix;
+5. network-level benefit classifier.
+
+Training script:
+
+- `scripts/train_intervention_benefit.py --model_type graph`
+
+Commit:
+
+- `1ba5d9e` — add graph intervention benefit predictor.
+
+### Command
+
+```bash
+python scripts/train_intervention_benefit.py \
+  --dataset results/oracle_recoverability/intervention_benefit_v1.npz \
+  --output results/oracle_recoverability/intervention_benefit_graph_v1.pth \
+  --validation_seeds 62016,62001 \
+  --model_type graph \
+  --epochs 100 \
+  --hidden_dim 32 \
+  --batch_size 16 \
+  --gpus 0
+```
+
+Validation split:
+
+- `62016`: hard bad seed with sharp safe/unsafe cliff.
+- `62001`: normal seed with a harmful intervention at step 120.
+
+### Results
+
+Compared with the previous temporal benefit classifier on the same split:
+
+| Model | Final Val AUC | Final Val AP | Final F1@0.5 |
+|---|---:|---:|---:|
+| Temporal benefit classifier | 0.3400 | 0.2942 | 0.3077 |
+| Graph Benefit Gate v1 | 0.8600 | 0.6595 | 0.7273 |
+
+Training trajectory for Graph Benefit Gate v1:
+
+| Epoch | Val AUC | Val AP | Val F1@0.5 |
+|---:|---:|---:|---:|
+| 10 | 0.6600 | 0.6330 | 0.5000 |
+| 20 | 0.7800 | 0.5976 | 0.5000 |
+| 60 | 0.8400 | 0.7226 | 0.6667 |
+| 80 | 0.8600 | 0.7417 | 0.7692 |
+| 100 | 0.8600 | 0.6595 | 0.7273 |
+
+### Sample-level diagnosis
+
+Important validation samples:
+
+| Sample | Label | Benefit | Predicted probability | Diagnosis |
+|---|---:|---:|---:|---|
+| `62016@210` | 1 | +183470 | 0.488 | borderline false negative at threshold 0.5 |
+| `62016@225` | 0 | -339885 | 0.478 | correctly below 0.5 but close |
+| `62016@240` | 0 | -325750 | 0.395 | correctly lower |
+| `62001@120` | 0 | -187045 | 0.673 | false positive |
+
+Important training/cohort samples:
+
+| Sample | Label | Benefit | Predicted probability | Diagnosis |
+|---|---:|---:|---:|---|
+| `62000@60` | 0 | -665710 | 0.609 | false positive |
+| `62000@75` | 0 | -665710 | 0.604 | false positive |
+| `62000@90` | 1 | +166625 | 0.738 | correct positive |
+| `62000@105` | 1 | +167385 | 0.686 | correct positive |
+
+### Interpretation
+
+This is the first strong evidence that graph-structured benefit modeling is
+better than the earlier temporal-only classifier. The improvement is large on
+the hard split:
+
+```text
+AUC: 0.34 -> 0.86
+F1@0.5: 0.31 -> 0.73
+```
+
+However, the sample-level diagnosis also shows the current graph model is not
+deployable yet:
+
+1. It still misclassifies `62001@120`, a normal-seed harmful intervention.
+2. It still gives high probabilities to `62000@60/75`, the catastrophic bad
+   intervention window.
+3. It mostly learns a coarse timing trend but not enough phase/action
+   compatibility.
+
+### Research implication
+
+The GNN direction is justified, but graph topology alone is not sufficient.
+
+The next model should explicitly include:
+
+- candidate switch step;
+- current traffic phase;
+- observed action;
+- temporal fallback action;
+- whether observed and temporal actions disagree;
+- phase-lane service compatibility before and after the candidate switch.
+
+This supports the evolving method:
+
+> Graph-based Counterfactual Intervention-Benefit Gate with
+> Phase/Action-Compatibility Features.
+
+### Next planned experiments
+
+1. Expand the benefit dataset with more fixed-step sweeps so the graph model is
+   not trained on only 54 samples.
+2. Add action disagreement and phase-compatibility features to the benefit
+   dataset.
+3. Re-train Graph Benefit Gate v2 and specifically test whether it fixes:
+   - `62001@120`;
+   - `62000@60/75`;
+   - `62016@210/225` boundary.
