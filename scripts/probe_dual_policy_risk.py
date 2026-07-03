@@ -70,8 +70,23 @@ def main():
     parser.add_argument("--seeds", required=True)
     parser.add_argument(
         "--control_source",
-        choices=("observed", "temporal", "queue_shield", "risk_model"),
+        choices=(
+            "observed",
+            "temporal",
+            "queue_shield",
+            "risk_model",
+            "temporal_after_step",
+        ),
         default="observed",
+    )
+    parser.add_argument(
+        "--temporal_start_step",
+        type=int,
+        default=0,
+        help=(
+            "For temporal_after_step, use observed actions before this step "
+            "and temporal fallback at/after this step."
+        ),
     )
     parser.add_argument("--shield_window", type=int, default=60)
     parser.add_argument("--shield_threshold", type=float, default=0.5)
@@ -241,6 +256,9 @@ def main():
                 )
             elif args.control_source == "temporal":
                 actions = temporal_actions
+            elif args.control_source == "temporal_after_step":
+                temporal_active = len(trace) >= args.temporal_start_step
+                actions = temporal_actions if temporal_active else observed_actions
             elif args.control_source == "risk_model":
                 risk_probability = 0.0
                 risk_aux_qmean = None
@@ -317,6 +335,10 @@ def main():
                 "active_vehicles": step_metrics["active_vehicles"],
                 "throughput": step_metrics["throughput"],
                 "shield_active": shield_active,
+                **({
+                    "temporal_active": temporal_active,
+                    "temporal_start_step": args.temporal_start_step,
+                } if args.control_source == "temporal_after_step" else {}),
                 **({
                     "risk_probability": risk_probability,
                     "risk_aux_qmean": risk_aux_qmean,
