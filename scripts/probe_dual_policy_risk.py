@@ -134,6 +134,12 @@ def main():
     parser.add_argument("--benefit_history", type=int, default=60)
     parser.add_argument("--benefit_threshold", type=float, default=0.5)
     parser.add_argument(
+        "--benefit_min_step",
+        type=int,
+        default=0,
+        help="Do not allow graph-benefit switching before this step.",
+    )
+    parser.add_argument(
         "--benefit_hold_steps",
         type=int,
         default=0,
@@ -426,7 +432,8 @@ def main():
                             torch.sigmoid(logits)[0].item()
                         )
                     benefit_triggered = (
-                        benefit_probability >= args.benefit_threshold
+                        len(trace) >= args.benefit_min_step
+                        and benefit_probability >= args.benefit_threshold
                     )
                 if benefit_triggered:
                     if args.benefit_hold_steps < 0:
