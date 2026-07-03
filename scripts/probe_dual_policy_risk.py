@@ -96,6 +96,15 @@ def main():
             "predicts future queue mean above this value."
         ),
     )
+    parser.add_argument(
+        "--risk_hold_steps",
+        type=int,
+        default=0,
+        help=(
+            "Keep using temporal fallback for this many steps after a risk "
+            "trigger. Use -1 to latch fallback for the rest of the episode."
+        ),
+    )
     parser.add_argument("--gpus", default=None)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
@@ -152,6 +161,8 @@ def main():
         queue_history = []
         semantic_history = []
         failure_history = []
+        risk_latched = False
+        risk_hold_until = -1
         shield_active = False
         done = False
         while not done:
@@ -233,7 +244,7 @@ def main():
             elif args.control_source == "risk_model":
                 risk_probability = 0.0
                 risk_aux_qmean = None
-                risk_active = False
+                risk_triggered = False
                 if failed and len(semantic_history) >= args.risk_history:
                     risk_sequence = torch.from_numpy(np.asarray(
                         semantic_history[-args.risk_history:],
@@ -263,14 +274,29 @@ def main():
                                 auxiliary[0] * risk_aux_std + risk_aux_mean
                             )
                             risk_aux_qmean = float(auxiliary[0].item())
-                    risk_active = risk_probability >= args.risk_threshold
+                    risk_triggered = (
+                        risk_probability >= args.risk_threshold
+                    )
                     if args.risk_aux_qmean_threshold is not None:
-                        risk_active = (
-                            risk_active
+                        risk_triggered = (
+                            risk_triggered
                             and risk_aux_qmean is not None
                             and risk_aux_qmean
                             >= args.risk_aux_qmean_threshold
                         )
+                if risk_triggered:
+                    if args.risk_hold_steps < 0:
+                        risk_latched = True
+                    elif args.risk_hold_steps > 0:
+                        risk_hold_until = max(
+                            risk_hold_until,
+                            len(trace) + args.risk_hold_steps,
+                        )
+                risk_active = (
+                    risk_triggered
+                    or risk_latched
+                    or len(trace) <= risk_hold_until
+                )
                 actions = temporal_actions if risk_active else observed_actions
             else:
                 actions = observed_actions
@@ -295,6 +321,7 @@ def main():
                     "risk_probability": risk_probability,
                     "risk_aux_qmean": risk_aux_qmean,
                     "risk_active": risk_active,
+                    "risk_triggered": risk_triggered,
                 } if args.control_source == "risk_model" else {}),
                 **({
                     "semantic_tokens": {
