@@ -628,3 +628,100 @@ The label should penalize unsafe switch states such as:
    - negative: switch step causes no benefit or catastrophic outcome.
 3. Add phase/state features to the benefit model, because bad windows likely
    correspond to phase-incompatible fallback switches.
+
+## 2026-07-03: Normal-seed collateral-damage sweep
+
+### Goal
+
+Check whether fixed temporal intervention harms episodes that are already
+healthy under the observed policy. This is necessary because a recovery method
+must not rescue bad seeds by creating new failures on normal seeds.
+
+### Seeds and baseline
+
+Normal seeds:
+
+| Seed | Observed total time |
+|---:|---:|
+| 62001 | 189435 |
+| 62002 | 182580 |
+| 62003 | 188810 |
+| 62004 | 185095 |
+
+### Command
+
+For each start step in `0, 120, 180, 240, 300`:
+
+```bash
+python scripts/probe_dual_policy_risk.py \
+  --config configs/mappo_cologne3_eval.yaml \
+  --model_path logs/selected_teachers_mature/cologne3 \
+  --seeds 62001,62002,62003,62004 \
+  --control_source temporal_after_step \
+  --temporal_start_step <STEP> \
+  --gpus 0 \
+  --output results/oracle_recoverability/fixed_temporal_start_<STEP>_normal4.json
+```
+
+Summary files:
+
+- `results/oracle_recoverability/fixed_temporal_normal4_summary.csv`
+- `results/oracle_recoverability/fixed_temporal_normal4_summary.json`
+
+### Results
+
+Total time spent:
+
+| Seed | observed | step 0 | step 120 | step 180 | step 240 | step 300 |
+|---:|---:|---:|---:|---:|---:|---:|
+| 62001 | 189435 | 188635 | 376480 | 199965 | 195150 | 194980 |
+| 62002 | 182580 | 202760 | 194130 | 201105 | 196935 | 190135 |
+| 62003 | 188810 | 189000 | 190990 | 193905 | 200005 | 194420 |
+| 62004 | 185095 | 191770 | 197915 | 202095 | 194765 | 192085 |
+
+Step-level summary:
+
+| Start step | Mean total | Mean delta vs observed | Max delta vs observed | Catastrophic count >300k |
+|---:|---:|---:|---:|---:|
+| 0 | 193041 | +6561 | +20180 | 0 |
+| 120 | 239879 | +53399 | +187045 | 1 |
+| 180 | 199268 | +12788 | +18525 | 0 |
+| 240 | 196714 | +10234 | +14355 | 0 |
+| 300 | 192905 | +6425 | +7555 | 0 |
+
+### Interpretation
+
+Fixed temporal intervention is not free on normal seeds.
+
+Key findings:
+
+1. Temporal-only is usually safe but slightly worse on average for normal seeds.
+2. Step 120 causes a catastrophic normal-seed failure for `62001`
+   (`376480`, +187045 vs observed).
+3. Other fixed steps mostly cause moderate degradation of roughly 3–7%.
+4. Therefore, a deployable recovery method must be selective:
+   - switch when the original observed trajectory is likely to fail;
+   - avoid phase/state combinations where switching itself is harmful.
+
+### Research implication
+
+The benefit-gate dataset must include both kinds of negatives:
+
+1. bad-seed unsafe switch times, e.g. `62000@60/75`, `62016@225/240`;
+2. normal-seed harmful switch times, e.g. `62001@120`.
+
+This is stronger than a spillback-risk label because it learns the actual
+decision boundary for intervention usefulness.
+
+### Next planned experiments
+
+1. Construct a small first-generation intervention-benefit dataset from:
+   - bad4 fixed-step sweep;
+   - refined critical-window sweep;
+   - normal4 collateral-damage sweep.
+2. Use semantic traces around each switch time as input and label by observed
+   intervention outcome:
+   - positive if `total_time_spent <= 250000` and improves over observed;
+   - negative if it is worse than observed or catastrophic.
+3. Train a lightweight benefit classifier and compare its selected switch
+   decisions with risk-only gates.
