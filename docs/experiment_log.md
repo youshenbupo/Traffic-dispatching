@@ -510,3 +510,121 @@ This benefit can be non-monotonic in time, so a useful model must learn both:
 3. Build a counterfactual benefit dataset from the fixed-step traces.
 4. Train a first benefit classifier/regressor and compare it against risk-only
    gates.
+
+## 2026-07-03: Refined intervention-window sweep
+
+### Goal
+
+Refine two critical windows discovered by the coarse fixed-step sweep:
+
+- `62000`: coarse sweep showed a catastrophic result at step 60 but recovery at
+  step 120.
+- `62016`: coarse sweep showed success at step 180 but catastrophic failure at
+  step 240.
+
+The purpose was to test whether these are noisy outcomes or stable narrow
+intervention windows.
+
+### Commands
+
+For `62000`:
+
+```bash
+python scripts/probe_dual_policy_risk.py \
+  --config configs/mappo_cologne3_eval.yaml \
+  --model_path logs/selected_teachers_mature/cologne3 \
+  --seeds 62000 \
+  --control_source temporal_after_step \
+  --temporal_start_step <30|45|60|75|90|105|120> \
+  --gpus 0 \
+  --output results/oracle_recoverability/fixed_temporal_seed62000_start_<STEP>.json
+```
+
+For `62016`:
+
+```bash
+python scripts/probe_dual_policy_risk.py \
+  --config configs/mappo_cologne3_eval.yaml \
+  --model_path logs/selected_teachers_mature/cologne3 \
+  --seeds 62016 \
+  --control_source temporal_after_step \
+  --temporal_start_step <180|195|210|225|240> \
+  --gpus 0 \
+  --output results/oracle_recoverability/fixed_temporal_seed62016_start_<STEP>.json
+```
+
+Summary files:
+
+- `results/oracle_recoverability/fixed_temporal_refined_summary.csv`
+- `results/oracle_recoverability/fixed_temporal_refined_summary.json`
+
+### Results
+
+`62000`:
+
+| Start step | Total time spent | Outcome |
+|---:|---:|---|
+| 30 | 209425 | rescued |
+| 45 | 209425 | rescued |
+| 60 | 1030965 | catastrophic |
+| 75 | 1030965 | catastrophic |
+| 90 | 198630 | rescued |
+| 105 | 197870 | rescued, best refined point |
+| 120 | 200145 | rescued |
+
+`62016`:
+
+| Start step | Total time spent | Outcome |
+|---:|---:|---|
+| 180 | 191510 | rescued |
+| 195 | 196395 | rescued |
+| 210 | 187445 | rescued, best refined point |
+| 225 | 710800 | catastrophic |
+| 240 | 696665 | catastrophic |
+
+### Interpretation
+
+The refined sweep confirms that the fixed-step results are not random noise.
+
+Important findings:
+
+1. `62000` has a stable bad intervention window at steps `60–75`.
+   - Switching at 30/45 is safe.
+   - Switching at 60/75 is catastrophic.
+   - Switching again at 90/105/120 is safe.
+2. `62016` has a sharp cliff between 210 and 225.
+   - Step 210 is the best refined point (`187445`).
+   - Step 225 fails catastrophically (`710800`).
+3. The intervention value is sharply non-monotonic.
+   - This rules out a simple “switch earlier when risk is high” policy.
+   - The gate must reason about state/phase compatibility and downstream
+     recoverability.
+
+### Research implication
+
+This is strong evidence for the paper's central novelty:
+
+> Failure recovery in MARL traffic control should be formulated as
+> counterfactual intervention timing, not merely risk prediction or observation
+> imputation.
+
+The next model should learn a benefit surface:
+
+```text
+V_switch(s_t, phase_t, failure_t) - V_observed(s_t, phase_t, failure_t)
+```
+
+The label should penalize unsafe switch states such as:
+
+- `62000` at steps 60/75;
+- `62016` at steps 225/240.
+
+### Next planned experiments
+
+1. Run fixed-step temporal intervention on normal seeds at representative
+   steps (`0, 120, 180, 240, 300`) to measure collateral damage.
+2. Build a first intervention-benefit dataset:
+   - positive: switch step leads to rescued outcome;
+   - negative: switch step causes no benefit or catastrophic outcome.
+3. Add phase/state features to the benefit model, because bad windows likely
+   correspond to phase-incompatible fallback switches.
