@@ -1215,3 +1215,131 @@ performance loss.
    as an offline classifier.
 3. Calibrate a threshold that prioritizes avoiding catastrophic false positives
    while still rescuing bad seeds.
+
+## 2026-07-04: Online Graph Benefit Gate and finite-intervention diagnosis
+
+### Code changes
+
+- Added online `graph_benefit` control to
+  `scripts/probe_dual_policy_risk.py`.
+- Fixed online benefit history alignment so the current decision step is not
+  leaked into the history window used by the benefit model.
+- Added `--benefit_min_step` to block very early unsafe switching.
+- Added finite hold control with `--benefit_hold_steps`.
+- Added refractory/cooldown control with `--benefit_cooldown_steps`.
+- Added `temporal_window`, a causal finite-window oracle:
+  temporal fallback is used only in `[temporal_start_step, temporal_end_step)`.
+
+The current best offline model remains:
+
+- `results/oracle_recoverability/intervention_benefit_graph_v3_context_e100.pth`
+
+### Online graph-benefit control results
+
+Observed bad seeds:
+
+| Seed | Observed total |
+|---:|---:|
+| 62000 | 365255 |
+| 62005 | 350335 |
+| 62009 | 362575 |
+| 62016 | 370915 |
+
+Key online configurations:
+
+| Config | bad4 mean | bad4 collapse | normal16 mean | normal collapse | Diagnosis |
+|---|---:|---:|---:|---:|---|
+| threshold 0.5, latch | 446793 | 2/4 | not run | - | too early and unsafe |
+| threshold 0.9, latch | 231440 | 1/4 | not run | - | too conservative; misses 62005 |
+| threshold 0.8, min90, latch | 194705 | 0/4 | 223742 | 2/16 | rescues bad4 but harms normal |
+| threshold 0.8, min120, latch | 259753 | 1/4 | 263138 | 2/16 | misses safe window for 62000 |
+| threshold 0.8, min90, hold60 | 186384 | 0/4 | 210273 | 2/16 | strongest first online candidate, still unsafe |
+| threshold 0.8, min90, hold30 | 184585 | 0/4 | 268109 | 4/16 | shorter repeated bursts amplify harm |
+| threshold 0.85, min90, hold60 | 292329 | 2/4 | 248670 | 5/16 | raising threshold does not solve safety |
+| threshold 0.8, min90, hold60, cooldown120 | 185950 | 0/4 | 269591 | 5/16 | cooldown still allows harmful repeated interventions |
+| threshold 0.8, min90, hold60, one-shot | 185849 | 0/4 | 231436 | 4/16 | one intervention can still harm normal seeds |
+| threshold 0.85, min90, hold60, one-shot | 230989 | 1/4 | not run | - | misses/rescues poorly; 62016 remains bad |
+| threshold 0.8, min90, hold30, one-shot | 459426 | 2/4 | not run | - | too short to rescue 62000/62005 |
+
+Detailed best/near-best online runs:
+
+| Run | Seed totals |
+|---|---|
+| `graph_benefit_bad4_t08_min90_hold60.json` | 62000: 188590, 62005: 186885, 62009: 182780, 62016: 187280 |
+| `graph_benefit_normal16_t08_min90_hold60.json` | collapse seeds: 62006: 368240, 62015: 368845 |
+| `graph_benefit_bad4_t08_min90_hold60_cd10000.json` | 62000: 188615, 62005: 186715, 62009: 182965, 62016: 185100 |
+| `graph_benefit_normal16_t08_min90_hold60_cd10000.json` | collapse seeds: 62004: 348210, 62013: 434605, 62015: 354655, 62017: 341790 |
+
+### Interpretation
+
+Offline Graph Benefit Gate v3 is a useful predictor, but direct online use is
+not yet publishable as a final controller. It reliably rescues the four bad
+seeds under several settings, but it still causes catastrophic false positives
+on normal seeds.
+
+The important diagnosis is that the current gate was trained on labels from
+`temporal_after_step`, i.e. permanent switching after a candidate step. The
+online controller is instead applying finite temporal bursts. This creates a
+target mismatch:
+
+- the model predicts permanent-switch benefit;
+- the controller executes finite-intervention benefit;
+- normal seeds can be sensitive to even one temporal burst.
+
+This is no longer just a threshold-calibration issue.
+
+### Finite-window oracle probe
+
+To test the target mismatch, `temporal_window` was added and run on the first
+trigger windows from the one-shot controller.
+
+Command pattern:
+
+```bash
+python scripts/probe_dual_policy_risk.py \
+  --config configs/mappo_cologne3_eval.yaml \
+  --model_path logs/selected_teachers_mature/cologne3 \
+  --seeds <seed> \
+  --control_source temporal_window \
+  --temporal_start_step <start> \
+  --temporal_end_step <end> \
+  --gpus 3 \
+  --output results/oracle_recoverability/finite_windows/window_s<seed>_<start>_<end>.json
+```
+
+Results:
+
+| Seed | Window | Total | Delta vs observed | Label for finite burst |
+|---:|---:|---:|---:|---|
+| 62000 | 93-153 | 188615 | -176640 | beneficial |
+| 62005 | 104-164 | 186715 | -163620 | beneficial |
+| 62009 | 94-154 | 182965 | -179610 | beneficial |
+| 62016 | 92-152 | 185100 | -185815 | beneficial |
+| 62004 | 91-151 | 186410 | +1315 | mostly safe/neutral |
+| 62013 | 102-162 | 434605 | +245705 | harmful |
+| 62015 | 92-152 | 354655 | +165690 | harmful |
+| 62017 | 95-155 | 341790 | +154165 | harmful |
+
+This confirms a clearer paper direction: learn a graph semantic finite
+intervention gate, not a permanent-switch gate. The finite-window labels expose
+the actual causal effect of a bounded temporal fallback burst.
+
+### Next planned experiments
+
+1. Build `intervention_benefit_finite_window` datasets:
+   - inputs: observed semantic history before candidate start;
+   - action: finite temporal burst with duration 60;
+   - label: improves total time without causing catastrophic normal harm.
+2. Expand finite-window oracle coverage:
+   - bad seeds: candidate starts around 75-150;
+   - normal seeds: starts around first high-probability graph-gate triggers;
+   - include both safe normal and harmful normal windows.
+3. Train a finite-window Graph Benefit Gate:
+   - same GNN semantic encoder;
+   - candidate duration embedding;
+   - cost-sensitive loss for catastrophic false positives.
+4. Evaluate online controller as:
+   - one-shot finite intervention;
+   - optional second intervention only if finite gate stays high after cooldown;
+   - report bad-seed rescue rate and normal-seed catastrophic false-positive
+     rate as primary metrics.

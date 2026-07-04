@@ -82,6 +82,7 @@ def main():
             "risk_model",
             "graph_benefit",
             "temporal_after_step",
+            "temporal_window",
         ),
         default="observed",
     )
@@ -90,8 +91,18 @@ def main():
         type=int,
         default=0,
         help=(
-            "For temporal_after_step, use observed actions before this step "
-            "and temporal fallback at/after this step."
+            "For temporal_after_step and temporal_window, use observed "
+            "actions before this step."
+        ),
+    )
+    parser.add_argument(
+        "--temporal_end_step",
+        type=int,
+        default=None,
+        help=(
+            "For temporal_window, use temporal fallback only before this "
+            "exclusive end step; if omitted, temporal_window is equivalent to "
+            "temporal_after_step."
         ),
     )
     parser.add_argument("--shield_window", type=int, default=60)
@@ -146,6 +157,17 @@ def main():
         help=(
             "Keep using temporal fallback for this many steps after a graph "
             "benefit trigger. Use -1 to latch fallback for the episode."
+        ),
+    )
+    parser.add_argument(
+        "--benefit_cooldown_steps",
+        type=int,
+        default=0,
+        help=(
+            "After a finite graph-benefit hold window, block new graph-benefit "
+            "triggers for this many steps. This implements a refractory period "
+            "so repeated short false-positive interventions do not accumulate "
+            "into a normal-seed collapse."
         ),
     )
     parser.add_argument("--gpus", default=None)
@@ -238,6 +260,8 @@ def main():
         risk_hold_until = -1
         benefit_latched = False
         benefit_hold_until = -1
+        benefit_cooldown_until = -1
+        benefit_last_hold_until = -1
         shield_active = False
         done = False
         while not done:
@@ -327,6 +351,12 @@ def main():
             elif args.control_source == "temporal_after_step":
                 temporal_active = len(trace) >= args.temporal_start_step
                 actions = temporal_actions if temporal_active else observed_actions
+            elif args.control_source == "temporal_window":
+                temporal_active = len(trace) >= args.temporal_start_step and (
+                    args.temporal_end_step is None
+                    or len(trace) < args.temporal_end_step
+                )
+                actions = temporal_actions if temporal_active else observed_actions
             elif args.control_source == "risk_model":
                 risk_probability = 0.0
                 risk_aux_qmean = None
@@ -387,6 +417,7 @@ def main():
             elif args.control_source == "graph_benefit":
                 benefit_probability = 0.0
                 benefit_triggered = False
+                benefit_on_cooldown = len(trace) <= benefit_cooldown_until
                 if failed and len(semantic_history) > args.benefit_history:
                     benefit_sequence = torch.from_numpy(np.asarray(
                         semantic_history[
@@ -433,16 +464,25 @@ def main():
                         )
                     benefit_triggered = (
                         len(trace) >= args.benefit_min_step
+                        and not benefit_on_cooldown
                         and benefit_probability >= args.benefit_threshold
                     )
                 if benefit_triggered:
                     if args.benefit_hold_steps < 0:
                         benefit_latched = True
                     elif args.benefit_hold_steps > 0:
+                        new_hold_until = len(trace) + args.benefit_hold_steps
                         benefit_hold_until = max(
                             benefit_hold_until,
-                            len(trace) + args.benefit_hold_steps,
+                            new_hold_until,
                         )
+                        if benefit_hold_until != benefit_last_hold_until:
+                            benefit_last_hold_until = benefit_hold_until
+                            benefit_cooldown_until = max(
+                                benefit_cooldown_until,
+                                benefit_hold_until
+                                + args.benefit_cooldown_steps,
+                            )
                 benefit_active = (
                     benefit_triggered
                     or benefit_latched
@@ -473,7 +513,11 @@ def main():
                 **({
                     "temporal_active": temporal_active,
                     "temporal_start_step": args.temporal_start_step,
-                } if args.control_source == "temporal_after_step" else {}),
+                    "temporal_end_step": args.temporal_end_step,
+                } if args.control_source in {
+                    "temporal_after_step",
+                    "temporal_window",
+                } else {}),
                 **({
                     "risk_probability": risk_probability,
                     "risk_aux_qmean": risk_aux_qmean,
@@ -484,6 +528,9 @@ def main():
                     "benefit_probability": benefit_probability,
                     "benefit_active": benefit_active,
                     "benefit_triggered": benefit_triggered,
+                    "benefit_on_cooldown": benefit_on_cooldown,
+                    "benefit_hold_until": benefit_hold_until,
+                    "benefit_cooldown_until": benefit_cooldown_until,
                 } if args.control_source == "graph_benefit" else {}),
                 **({
                     "semantic_tokens": {
